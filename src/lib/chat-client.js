@@ -10,13 +10,11 @@ export class ChatClient {
     this.wsRetryCount = 0;
     this.maxWsRetries = 3;
     this.usePolling = false;
-    
     this.init();
   }
 
   async init() {
     this.loadQueueFromDB();
-    
     const isLocal = typeof window !== 'undefined' && 
       (window.location.hostname === 'localhost' || 
        window.location.hostname === '127.0.0.1' || 
@@ -31,24 +29,19 @@ export class ChatClient {
       this.usePolling = true;
       this.startPolling();
     }
-    
     window.addEventListener('online', () => this.syncQueue());
   }
 
-  // --- LOCAL MODE (WebSockets) ---
   connectWebSocket() {
     if (this.usePolling) return;
-
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
-    
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
       this.isOnline = true;
       this.wsRetryCount = 0;
       this.onStatusChange(true);
-      // Identify this socket
       this.ws.send(JSON.stringify({ type: 'auth', data: { id: this.user_id } }));
       this.syncQueue();
     };
@@ -56,69 +49,53 @@ export class ChatClient {
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'chat') {
-          this.onMessage(msg.data);
-        } else if (msg.type === 'edit') {
-          this.onMessage({ ...msg.data, type: 'edit' });
-        } else if (msg.type === 'delete') {
-          this.onMessage({ id: msg.data.id, type: 'delete' });
-        } else if (msg.type === 'typing') {
-          this.onMessage({ ...msg.data, type: 'typing' });
-        } else if (msg.type === 'ack') {
-          this.markAsSent(msg.id);
-        }
+        if (msg.type === 'chat') this.onMessage(msg.data);
+        else if (msg.type === 'edit') this.onMessage({ ...msg.data, type: 'edit' });
+        else if (msg.type === 'delete') this.onMessage({ id: msg.data.id, type: 'delete' });
+        else if (msg.type === 'typing') this.onMessage({ ...msg.data, type: 'typing' });
+        else if (msg.type === 'read') this.onMessage({ id: msg.data.id, type: 'read' });
+        else if (msg.type === 'ack') this.markAsSent(msg.id);
       } catch (e) { console.error(e); }
     };
 
-    this.ws.onclose = (event) => {
+    this.ws.onclose = () => {
       this.isOnline = false;
       this.onStatusChange(false);
       if (!this.usePolling) {
         this.wsRetryCount++;
-        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        if (this.wsRetryCount > (isLocalhost ? 0 : this.maxWsRetries)) {
-          this.usePolling = true;
-          this.startPolling();
-        } else {
-          setTimeout(() => this.connectWebSocket(), 2000);
-        }
+        setTimeout(() => this.connectWebSocket(), 2000);
       }
     };
-    
     this.ws.onerror = () => this.ws.close();
   }
 
   sendTyping(sender, receiver_id) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'typing', data: { sender, receiver_id } }));
-    }
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'typing', data: { sender, receiver_id } }));
+  }
+
+  markRead(id, receiver_id) {
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'read', data: { id, receiver_id } }));
+    else fetch('/api/messages', { method: 'PATCH', body: JSON.stringify({ id, is_read: true }) });
+  }
+
+  blockUser(blocked_id) {
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'block', data: { blocked_id } }));
   }
 
   editMessage(id, receiver_id, content) {
     const data = { id, receiver_id, content };
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'edit', data }));
-    } else {
-      fetch('/api/messages', { method: 'PATCH', body: JSON.stringify(data) });
-    }
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'edit', data }));
+    else fetch('/api/messages', { method: 'PATCH', body: JSON.stringify(data) });
   }
 
   deleteMessage(id, receiver_id) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'delete', data: { id, receiver_id } }));
-    } else {
-      fetch('/api/messages', { method: 'DELETE', body: JSON.stringify({ id, receiver_id }) });
-    }
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'delete', data: { id, receiver_id } }));
+    else fetch('/api/messages', { method: 'DELETE', body: JSON.stringify({ id, receiver_id }) });
   }
 
-  // --- VERCEL MODE (API Polling) ---
   startPolling() {
     this.fetchMessages();
-    if (!this.pollInterval) {
-      this.pollInterval = setInterval(() => {
-        if (navigator.onLine) this.fetchMessages();
-      }, 3000);
-    }
+    if (!this.pollInterval) this.pollInterval = setInterval(() => { if (navigator.onLine) this.fetchMessages(); }, 3000);
   }
 
   async fetchMessages() {
@@ -136,55 +113,28 @@ export class ChatClient {
     const chatMsg = { ...data, status: 'pending' };
     this.onMessage(chatMsg);
     if (!this.isOnline) { this.queueMessage(chatMsg); return; }
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'chat', data: chatMsg }));
-    } else {
-      this.pushViaAPI(chatMsg);
-    }
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'chat', data: chatMsg }));
+    else this.pushViaAPI(chatMsg);
   }
 
   async pushViaAPI(msg) {
     try {
-      const res = await fetch('/api/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(msg)
-      });
-      if (res.ok) this.markAsSent(msg.id);
-      else this.queueMessage(msg);
+      const res = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(msg) });
+      if (res.ok) this.markAsSent(msg.id); else this.queueMessage(msg);
     } catch (e) { this.queueMessage(msg); }
   }
 
-  queueMessage(msg) {
-    if (!this.queue.find(m => m.id === msg.id)) {
-      this.queue.push(msg);
-      this.saveQueueToDB();
-    }
-  }
-
-  markAsSent(id) {
-    this.queue = this.queue.filter(m => m.id !== id);
-    this.saveQueueToDB();
-  }
-
+  queueMessage(msg) { if (!this.queue.find(m => m.id === msg.id)) { this.queue.push(msg); this.saveQueueToDB(); } }
+  markAsSent(id) { this.queue = this.queue.filter(m => m.id !== id); this.saveQueueToDB(); }
   async syncQueue() {
     if (this.queue.length === 0) return;
-    const itemsToSync = [...this.queue];
-    for (const msg of itemsToSync) {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'chat', data: msg }));
-      } else {
-        await this.pushViaAPI(msg);
-      }
+    for (const msg of [...this.queue]) {
+      if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'chat', data: msg })); else await this.pushViaAPI(msg);
     }
   }
-
   saveQueueToDB() { localStorage.setItem('chat_offline_queue_' + this.user_id, JSON.stringify(this.queue)); }
   loadQueueFromDB() {
     const saved = localStorage.getItem('chat_offline_queue_' + this.user_id);
-    if (saved) {
-      this.queue = JSON.parse(saved);
-      this.queue.forEach(m => this.onMessage(m));
-    }
+    if (saved) { this.queue = JSON.parse(saved); this.queue.forEach(m => this.onMessage(m)); }
   }
 }

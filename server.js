@@ -15,44 +15,36 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''
 );
 
-// Global error handling to prevent crashes from internal library errors (like WS frame errors)
+// Global error handling
 process.on('uncaughtException', (err) => {
   if (err.code === 'WS_ERR_INVALID_CLOSE_CODE' || err.message.includes('Invalid WebSocket frame')) {
-    console.error('Caught and suppressed WebSocket frame error:', err.message);
+    console.error('WebSocket frame error suppressed');
   } else {
     console.error('Uncaught Exception:', err);
     process.exit(1);
   }
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
 const dev = process.env.NODE_ENV !== 'production';
-const hostname = '0.0.0.0'; // Bind to all interfaces
+const hostname = '0.0.0.0';
 const port = parseInt(process.env.PORT || '3000', 10);
-
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-// Ensure db directory exists
-if (!fs.existsSync('./data')) {
-  fs.mkdirSync('./data');
-}
+if (!fs.existsSync('./data')) fs.mkdirSync('./data');
 
-// Initialize SQLite Database
 const db = new Database('./data/chat.db');
 db.exec(`
   CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     sender TEXT NOT NULL,
+    sender_id TEXT,
     receiver_id TEXT,
     color TEXT NOT NULL,
     content TEXT NOT NULL,
-    timestamp INTEGER NOT NULL
+    timestamp INTEGER NOT NULL,
+    is_read BOOLEAN DEFAULT 0
   );
-
   CREATE TABLE IF NOT EXISTS connections (
     id TEXT PRIMARY KEY,
     sender_id TEXT NOT NULL,
@@ -60,130 +52,70 @@ db.exec(`
     status TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS blocks (
+    blocker_id TEXT NOT NULL,
+    blocked_id TEXT NOT NULL,
+    PRIMARY KEY(blocker_id, blocked_id)
+  );
 `);
 
-const insertMsg = db.prepare('INSERT INTO messages (id, sender, receiver_id, color, content, timestamp) VALUES (?, ?, ?, ?, ?, ?)');
+const insertMsg = db.prepare('INSERT INTO messages (id, sender, sender_id, receiver_id, color, content, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)');
+const markRead = db.prepare('UPDATE messages SET is_read = 1 WHERE id = ?');
 const updateMsg = db.prepare('UPDATE messages SET content = ? WHERE id = ?');
 const deleteMsg = db.prepare('DELETE FROM messages WHERE id = ?');
-const getRecentMsgs = db.prepare('SELECT * FROM messages WHERE (sender = ? AND receiver_id = ?) OR (sender = ? AND receiver_id = ?) ORDER BY timestamp DESC LIMIT 50');
+const addBlock = db.prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id) VALUES (?, ?)');
+const checkBlocked = db.prepare('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?');
 
 app.prepare().then(() => {
   const server = createServer((req, res) => {
-    try {
-      const parsedUrl = parse(req.url, true);
-      // Let Next.js handle all other routes
-      handle(req, res, parsedUrl);
-    } catch (err) {
-      console.error('Error occurred handling', req.url, err);
-      res.statusCode = 500;
-      res.end('internal server error');
-    }
+    try { handle(req, res, parse(req.url, true)); } catch (err) { res.statusCode = 500; res.end(); }
   });
 
-  // Setup WebSocket Server
   const wss = new WebSocketServer({ server });
-
-  wss.on('error', (err) => {
-    console.error('WebSocket Server Error:', err);
-  });
-  
-  // Broadcaster for other clients
-  const broadcast = (message, senderWs) => {
-    wss.clients.forEach((client) => {
-      if (client !== senderWs && client.readyState === 1) { // 1 = OPEN
-        client.send(JSON.stringify(message));
-      }
-    });
-  };
-
   wss.on('connection', (ws) => {
-    // ... (individual socket handling)
-    ws.on('error', (err) => {
-      console.error('Individual WebSocket Error:', err.message);
-    });
-
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString());
-        
-        // Store user_id on the socket for private routing
-        if (msg.type === 'auth') {
-          ws.user_id = msg.data.id;
-          return;
-        }
+        if (msg.type === 'auth') { ws.user_id = msg.data.id; return; }
 
         if (msg.type === 'chat') {
-          const chatData = {
-            id: msg.data.id || crypto.randomUUID(),
-            sender: msg.data.sender || 'Anonymous',
-            receiver_id: msg.data.receiver_id,
-            color: msg.data.color || '#3b82f6',
-            content: msg.data.content,
-            timestamp: msg.data.timestamp || Date.now()
-          };
+          // Check if receiver has blocked sender
+          if (checkBlocked.get(msg.data.receiver_id, ws.user_id)) return;
 
+          const chatData = { ...msg.data, timestamp: Date.now() };
           try {
-            insertMsg.run(chatData.id, chatData.sender, chatData.receiver_id, chatData.color, chatData.content, chatData.timestamp);
-            
-            // Sync to Cloud
-            supabase.from('messages').insert([chatData]).then(({ error }) => {
-              if (error) console.warn('Cloud sync failed');
-            });
-
-            // Private Broadcast: Send only to receiver and sender's other tabs
-            wss.clients.forEach((client) => {
-              if (client.readyState === 1 && (client.user_id === chatData.receiver_id || client.user_id === ws.user_id)) {
-                if (client !== ws) client.send(JSON.stringify({ type: 'chat', data: chatData }));
+            insertMsg.run(chatData.id, chatData.sender, ws.user_id, chatData.receiver_id, chatData.color, chatData.content, chatData.timestamp);
+            supabase.from('messages').insert([chatData]).then(() => {});
+            wss.clients.forEach(c => {
+              if (c.readyState === 1 && (c.user_id === chatData.receiver_id || c.user_id === ws.user_id)) {
+                if (c !== ws) c.send(JSON.stringify({ type: 'chat', data: chatData }));
               }
             });
-            
             ws.send(JSON.stringify({ type: 'ack', id: chatData.id }));
-          } catch (dbErr) { console.error(dbErr); }
-        } else if (msg.type === 'edit' || msg.type === 'delete' || msg.type === 'typing') {
-          // Broadcast these to the specific receiver
-          wss.clients.forEach((client) => {
-            if (client.readyState === 1 && client.user_id === msg.data.receiver_id) {
-               client.send(JSON.stringify(msg));
-            }
+          } catch (e) { console.error(e); }
+        } else if (msg.type === 'read') {
+          markRead.run(msg.data.id);
+          supabase.from('messages').update({ is_read: true }).eq('id', msg.data.id).then(() => {});
+          wss.clients.forEach(c => {
+            if (c.readyState === 1 && c.user_id === msg.data.receiver_id) c.send(JSON.stringify(msg));
+          });
+        } else if (msg.type === 'block') {
+          addBlock.run(ws.user_id, msg.data.blocked_id);
+          supabase.from('blocked_users').insert([{ blocker_id: ws.user_id, blocked_id: msg.data.blocked_id }]).then(() => {});
+        } else {
+          wss.clients.forEach(c => {
+            if (c.readyState === 1 && c.user_id === msg.data.receiver_id) c.send(JSON.stringify(msg));
           });
         }
       } catch (e) { console.error(e); }
     });
   });
 
-  // Setup mDNS (Bonjour)
-  let bonjour;
   try {
-    bonjour = new Bonjour.Bonjour();
+    const BonjourService = require('bonjour-service');
+    const bonjour = new BonjourService.Bonjour();
     bonjour.publish({ name: 'LocalChat', type: 'http', port });
-    console.log('📡 mDNS Broadcast active as _http._tcp (LocalChat.local)');
-  } catch (e) {
-    console.error('Failed to start mDNS broadcast:', e);
-  }
+  } catch (e) {}
 
-  // Graceful shutdown
-  const shutdown = () => {
-    console.log('\nShutting down...');
-    if (bonjour) {
-      bonjour.unpublishAll(() => {
-        bonjour.destroy();
-        process.exit(0);
-      });
-    } else {
-      process.exit(0);
-    }
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-
-  server.once('error', (err) => {
-    console.error(err);
-    process.exit(1);
-  });
-
-  server.listen(port, '0.0.0.0', () => {
-    console.log(`> Ready on http://0.0.0.0:${port}`);
-    console.log(`> Also accessible on your network at http://<your-ip>:${port}`);
-  });
+  server.listen(port, '0.0.0.0', () => console.log(`Ready on port ${port}`));
 });
