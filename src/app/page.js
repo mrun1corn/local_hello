@@ -52,6 +52,7 @@ export default function ChatPage() {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [showMobileSearch, setShowMobileSearch] = useState(false);
   
   const clientRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -207,14 +208,14 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30">
+    <div className="flex flex-col h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 overflow-hidden">
       {/* Header */}
-      <header className="flex-shrink-0 flex items-center justify-between px-6 py-4 bg-gray-800/50 backdrop-blur-md border-b border-gray-700/50 sticky top-0 z-10">
-        <div>
-          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+      <header className="flex-shrink-0 flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 bg-gray-800/50 backdrop-blur-md border-b border-gray-700/50 sticky top-0 z-20">
+        <div className={`${showMobileSearch ? 'hidden' : 'block'} sm:block`}>
+          <h1 className="text-lg sm:text-xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
             LocalChat
           </h1>
-          <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5">
+          <p className="text-[10px] sm:text-xs text-gray-400 mt-0.5 flex items-center gap-1.5">
             <span 
               className="inline-block w-2 h-2 rounded-full" 
               style={{ backgroundColor: identity?.color || '#3b82f6' }}
@@ -223,20 +224,29 @@ export default function ChatPage() {
           </p>
         </div>
 
-        <div className="flex-1 max-w-md mx-8 relative hidden md:block">
-          <div className="relative">
-            <Search className="absolute left-3 top-2.5 text-gray-500" size={18} />
+        {/* Search Bar (Mobile Responsive) */}
+        <div className={`flex-1 mx-2 sm:mx-8 relative ${showMobileSearch ? 'block' : 'hidden sm:block'}`}>
+          <div className="relative flex items-center">
+            <Search className="absolute left-3 text-gray-500" size={18} />
             <input
               type="text"
-              placeholder="Search users by name or email..."
+              placeholder="Search..."
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}
-              className="w-full bg-gray-900/50 border border-gray-700 rounded-full py-2 pl-10 pr-4 outline-none focus:border-blue-500 transition-all text-sm"
+              className="w-full bg-gray-900/50 border border-gray-700 rounded-full py-2 pl-10 pr-10 outline-none focus:border-blue-500 transition-all text-base sm:text-sm"
             />
+            {showMobileSearch && (
+              <button 
+                onClick={() => {setShowMobileSearch(false); setSearchQuery(''); setSearchResults([]);}}
+                className="absolute right-3 text-xs text-gray-400 font-bold"
+              >
+                ESC
+              </button>
+            )}
           </div>
           
           {searchQuery.length >= 2 && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-50">
+            <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-50 max-h-[60vh] overflow-y-auto text-left">
               {isSearching ? (
                 <div className="p-4 text-center text-sm text-gray-400">Searching...</div>
               ) : searchResults.length > 0 ? (
@@ -245,7 +255,7 @@ export default function ChatPage() {
                     <span className="w-8 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: user.color }} />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold truncate">{user.username}</p>
-                      <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                      <p className="text-[10px] text-gray-500 truncate">{user.email}</p>
                     </div>
                   </div>
                 ))
@@ -256,25 +266,34 @@ export default function ChatPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+        <div className="flex items-center gap-2 sm:gap-4">
+          {!showMobileSearch && (
+            <button 
+              onClick={() => setShowMobileSearch(true)}
+              className="sm:hidden p-2 text-gray-400 hover:text-blue-400 transition-colors"
+            >
+              <Search size={20} />
+            </button>
+          )}
+          
+          <div className={`flex items-center gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full text-[10px] sm:text-sm font-medium transition-colors ${
             isOnline ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
           }`}>
-            {isOnline ? <Wifi size={16} /> : <WifiOff size={16} />}
-            {isOnline ? 'Connected' : 'Offline Mode'}
+            {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
+            <span className="hidden xs:inline">{isOnline ? 'On' : 'Off'}</span>
           </div>
           <button 
             onClick={handleLogout}
-            className="p-2 text-gray-400 hover:text-rose-400 transition-colors"
+            className="p-1.5 sm:p-2 text-gray-400 hover:text-rose-400 transition-colors"
             title="Sign Out"
           >
-            <LogOut size={20} />
+            <LogOut size={18} />
           </button>
         </div>
       </header>
 
       {/* Messages Area */}
-      <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+      <main className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6">
         {messages.map((msg, idx) => {
           const isMe = msg.sender === identity?.username;
           const showName = !isMe && (idx === 0 || messages[idx - 1].sender !== msg.sender);
@@ -291,9 +310,9 @@ export default function ChatPage() {
                   isMe 
                     ? 'bg-blue-600 text-white rounded-br-sm' 
                     : 'bg-gray-800 text-gray-100 rounded-bl-sm border border-gray-700/50'
-                } transition-all duration-200 hover:shadow-lg`}
+                } transition-all duration-200 hover:shadow-lg shadow-black/20`}
               >
-                <div className="leading-relaxed whitespace-pre-wrap break-words">
+                <div className="leading-relaxed whitespace-pre-wrap break-words text-sm sm:text-base">
                   {renderContent(msg.content)}
                 </div>
                 
@@ -311,10 +330,10 @@ export default function ChatPage() {
       </main>
 
       {/* Input Area */}
-      <footer className="flex-shrink-0 p-4 bg-gray-900/80 backdrop-blur-lg border-t border-gray-800">
+      <footer className="flex-shrink-0 p-3 sm:p-4 bg-gray-900/80 backdrop-blur-lg border-t border-gray-800">
         <form 
           onSubmit={handleSend} 
-          className="max-w-4xl mx-auto flex items-end gap-2 bg-gray-800 rounded-3xl p-1 border border-gray-700/50 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all"
+          className="max-w-4xl mx-auto flex items-end gap-2 bg-gray-800 rounded-3xl p-1 border border-gray-700/50 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all shadow-xl"
         >
           <input
             type="file"
@@ -327,7 +346,7 @@ export default function ChatPage() {
             type="button"
             onClick={() => fileInputRef.current.click()}
             disabled={uploading}
-            className="p-3 m-1 text-gray-400 hover:text-blue-400 transition-colors rounded-full"
+            className="p-3 text-gray-400 hover:text-blue-400 transition-colors rounded-full"
           >
             {uploading ? <Loader2 className="animate-spin" size={20} /> : <ImageIcon size={20} />}
           </button>
@@ -336,15 +355,15 @@ export default function ChatPage() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={isOnline ? "Type a message..." : "Type offline... will send when reconnected"}
-            className="flex-1 bg-transparent px-2 py-3 outline-none text-gray-100 placeholder:text-gray-500"
+            placeholder={isOnline ? "Message..." : "Offline..."}
+            className="flex-1 bg-transparent px-2 py-3 outline-none text-gray-100 placeholder:text-gray-500 text-base"
           />
           <button
             type="submit"
             disabled={!input.trim()}
-            className="p-3 m-1 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-full transition-colors flex-shrink-0"
+            className="p-3 m-1 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-full transition-colors flex-shrink-0 active:scale-95 shadow-lg shadow-blue-600/20"
           >
-            <Send size={20} className={input.trim() && isOnline ? "translate-x-0.5 -translate-y-0.5" : ""} />
+            <Send size={18} />
           </button>
         </form>
       </footer>
