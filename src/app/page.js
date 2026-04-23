@@ -100,7 +100,7 @@ export default function ChatPage() {
 
     if (accepted) {
       const formatted = accepted.map(c => {
-        const other = c.sender_id === userId ? c.profiles!connections_receiver_id_fkey : c.profiles!connections_sender_id_fkey;
+        const other = c.sender_id === userId ? c['profiles!connections_receiver_id_fkey'] : c['profiles!connections_sender_id_fkey'];
         return { ...other, connection_id: c.id };
       });
       setContacts(formatted);
@@ -114,7 +114,7 @@ export default function ChatPage() {
       .eq('status', 'pending');
     
     if (pending) {
-      setPendingRequests(pending.map(p => ({ ...p.profiles!connections_sender_id_fkey, request_id: p.id })));
+      setPendingRequests(pending.map(p => ({ ...p['profiles!connections_sender_id_fkey'], request_id: p.id })));
     }
   };
 
