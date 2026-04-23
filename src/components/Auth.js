@@ -26,6 +26,17 @@ export default function Auth({ onAuthComplete }) {
         if (error) throw error;
         onAuthComplete(data.user);
       } else {
+        // 1. Check if username is taken first
+        const { data: existingUser } = await supabase
+          .from('profiles')
+          .select('username')
+          .ilike('username', username)
+          .single();
+
+        if (existingUser) {
+          throw new Error('This username is already taken. Please choose another one.');
+        }
+
         const { data, error } = await supabase.auth.signUp({
           email,
           password,

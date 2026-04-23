@@ -155,6 +155,20 @@ export default function ChatPage() {
 
   const updateProfile = async () => {
     if (!newUsername.trim()) return;
+    if (newUsername === identity.username) { setEditingProfile(false); return; }
+
+    // Check if new username is taken
+    const { data: existing } = await supabase
+      .from('profiles')
+      .select('username')
+      .ilike('username', newUsername)
+      .single();
+
+    if (existing) {
+      toast.error("This username is already taken");
+      return;
+    }
+
     const { error } = await supabase.auth.updateUser({ data: { username: newUsername } });
     if (!error) {
       await supabase.from('profiles').update({ username: newUsername }).eq('id', identity.id);
