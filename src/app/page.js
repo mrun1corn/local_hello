@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { Send, Wifi, WifiOff, LogOut, Search, Image as ImageIcon, Loader2, MoreVertical, Edit2, Trash2, Smile, X, UserPlus, Check, MessageSquare, Users } from 'lucide-react';
+import { Send, Wifi, WifiOff, LogOut, Search, Image as ImageIcon, Loader2, MoreVertical, Edit2, Trash2, Smile, X, UserPlus, Check, MessageSquare, Users, Inbox } from 'lucide-react';
 import { ChatClient } from '@/lib/chat-client';
 import Auth from '@/components/Auth';
 import { supabase } from '@/lib/supabase';
@@ -35,7 +35,7 @@ export default function ChatPage() {
   
   // Contacts & Connections
   const [contacts, setContacts] = useState([]);
-  const [pendingRequests, setPendingRequests] = useState([]);
+  const [messageRequests, setMessageRequests] = useState([]);
   const [activeContact, setActiveContact] = useState(null);
   const [showSidebar, setShowSidebar] = useState(true);
   
@@ -82,14 +82,14 @@ export default function ChatPage() {
       } else {
         setIdentity(null);
         setContacts([]);
-        setPendingRequests([]);
+        setMessageRequests([]);
       }
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
-  // 2. Load Connections
+  // 2. Load Connections & Requests
   const loadConnections = async (userId) => {
     // Get accepted contacts
     const { data: accepted } = await supabase
@@ -99,14 +99,13 @@ export default function ChatPage() {
       .eq('status', 'accepted');
 
     if (accepted) {
-      const formatted = accepted.map(c => {
+      setContacts(accepted.map(c => {
         const other = c.sender_id === userId ? c['profiles!connections_receiver_id_fkey'] : c['profiles!connections_sender_id_fkey'];
         return { ...other, connection_id: c.id };
-      });
-      setContacts(formatted);
+      }));
     }
 
-    // Get pending requests (received)
+    // Get pending message requests
     const { data: pending } = await supabase
       .from('connections')
       .select('*, profiles!connections_sender_id_fkey(*)')
@@ -114,7 +113,7 @@ export default function ChatPage() {
       .eq('status', 'pending');
     
     if (pending) {
-      setPendingRequests(pending.map(p => ({ ...p['profiles!connections_sender_id_fkey'], request_id: p.id })));
+      setMessageRequests(pending.map(p => ({ ...p['profiles!connections_sender_id_fkey'], request_id: p.id })));
     }
   };
 
@@ -127,35 +126,32 @@ export default function ChatPage() {
       return;
     }
 
-    // Filter messages for current active conversation
     if (msg.type === 'edit') {
       setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, content: msg.content, edited: true } : m));
     } else if (msg.type === 'delete') {
       setMessages(prev => prev.filter(m => m.id !== msg.id));
     } else {
-      // Only add message if it belongs to active chat
+      // Logic for Message Requests: If we get a message from someone NOT in contacts, reload connections
       const isFromActive = activeContact && (msg.sender_id === activeContact.id || msg.receiver_id === activeContact.id);
-      const isGlobal = !msg.receiver_id; // Support global if needed
       
-      if (isFromActive || isGlobal) {
+      if (isFromActive) {
         setMessages((prev) => {
-          if (prev.find(m => m.id === msg.id)) {
-            return prev.map(m => m.id === msg.id ? { ...m, ...msg, status: 'sent' } : m);
-          }
+          if (prev.find(m => m.id === msg.id)) return prev.map(m => m.id === msg.id ? { ...m, ...msg, status: 'sent' } : m);
           return [...prev, msg].sort((a, b) => a.timestamp - b.timestamp);
         });
+      } else if (msg.receiver_id === identity?.id) {
+        // New request received, refresh sidebar
+        loadConnections(identity.id);
       }
     }
     
     setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
   }, [activeContact, identity]);
 
-  // 4. Initialize Client when Active Contact Changes
   useEffect(() => {
     if (!session || !identity) return;
     clientRef.current = new ChatClient(identity.id, handleNewMessage, setIsOnline);
     
-    // Load history for active contact
     if (activeContact) {
       setMessages([]);
       supabase.from('messages')
@@ -167,38 +163,36 @@ export default function ChatPage() {
 
     return () => {
       if (clientRef.current?.ws) clientRef.current.ws.close();
-      if (clientRef.current?.pollInterval) clearInterval(clientRef.current.pollInterval);
     };
   }, [session, identity, activeContact, handleNewMessage]);
 
-  // 5. Connection Actions
-  const sendRequest = async (user) => {
-    const { error } = await supabase
-      .from('connections')
-      .insert([{ sender_id: identity.id, receiver_id: user.id, status: 'pending' }]);
-    
-    if (error) alert(error.message);
-    else {
-      alert('Request sent!');
-      setSearchQuery('');
-    }
+  // 4. Actions
+  const openChatWithSearch = async (user) => {
+    setSearchQuery('');
+    setSearchResults([]);
+    setActiveContact(user);
+    if(window.innerWidth < 640) setShowSidebar(false);
   };
 
   const acceptRequest = async (request) => {
-    const { error } = await supabase
-      .from('connections')
-      .update({ status: 'accepted' })
-      .eq('id', request.request_id);
-    
-    if (!error) {
-      setPendingRequests(prev => prev.filter(r => r.request_id !== request.request_id));
-      loadConnections(identity.id);
-    }
+    await supabase.from('connections').update({ status: 'accepted' }).eq('id', request.request_id);
+    loadConnections(identity.id);
+    setActiveContact(request);
   };
 
-  const handleSend = (e) => {
+  const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim() || !activeContact) return;
+
+    // Check if we need to create a connection request first
+    const isConnected = contacts.find(c => c.id === activeContact.id);
+    const isRequested = messageRequests.find(r => r.id === activeContact.id);
+
+    if (!isConnected && !isRequested) {
+      // First message to a stranger creates a 'pending' connection automatically
+      await supabase.from('connections').insert([{ sender_id: identity.id, receiver_id: activeContact.id, status: 'pending' }]);
+      loadConnections(identity.id);
+    }
 
     const chatData = {
       id: crypto.randomUUID(),
@@ -221,7 +215,6 @@ export default function ChatPage() {
     setShowEmoji(false);
   };
 
-  // UI Handlers
   const handleSearch = async (query) => {
     setSearchQuery(query);
     if (query.length < 2) { setSearchResults([]); return; }
@@ -231,129 +224,154 @@ export default function ChatPage() {
     setIsSearching(false);
   };
 
-  if (authLoading) return <div className="h-screen bg-gray-900 flex items-center justify-center text-gray-400">Loading...</div>;
+  if (authLoading) return <div className="h-screen bg-gray-900 flex items-center justify-center text-gray-400 font-medium">Booting chat...</div>;
   if (!session) return <Auth onAuthComplete={() => window.location.reload()} />;
 
   return (
     <div className="flex h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 overflow-hidden">
       
       {/* Sidebar */}
-      <aside className={`${showSidebar ? 'w-full sm:w-80' : 'w-0'} bg-gray-800/50 border-r border-gray-700/50 flex flex-col transition-all overflow-hidden z-30`}>
-        <div className="p-4 border-b border-gray-700/50 flex items-center justify-between">
-           <h2 className="font-bold flex items-center gap-2"><Users size={20}/> People</h2>
-           <button onClick={() => setShowSidebar(false)} className="sm:hidden text-gray-400"><X/></button>
+      <aside className={`${showSidebar ? 'w-full sm:w-80' : 'w-0'} bg-gray-800/40 border-r border-gray-700/50 flex flex-col transition-all overflow-hidden z-30`}>
+        <div className="p-5 border-b border-gray-700/50 flex items-center justify-between">
+           <h2 className="font-bold flex items-center gap-2 text-lg"><Users size={20} className="text-blue-400"/> Contacts</h2>
+           <button onClick={() => setShowSidebar(false)} className="sm:hidden text-gray-400 p-1 hover:bg-gray-700 rounded-lg"><X size={20}/></button>
         </div>
         
-        <div className="p-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-2.5 text-gray-500" size={16} />
+        <div className="p-4">
+          <div className="relative group">
+            <Search className="absolute left-3 top-2.5 text-gray-500 group-focus-within:text-blue-400 transition-colors" size={16} />
             <input 
               type="text" 
-              placeholder="Search users..." 
+              placeholder="Search people..." 
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg py-2 pl-9 pr-4 text-sm outline-none focus:border-blue-500" 
+              className="w-full bg-gray-900/80 border border-gray-700 rounded-xl py-2.5 pl-10 pr-4 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-all" 
             />
             {searchResults.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-lg shadow-2xl z-50">
+              <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden border-t-0">
                 {searchResults.map(user => (
-                  <div key={user.id} className="p-3 hover:bg-gray-700 flex items-center justify-between gap-2 border-b border-gray-700 last:border-0">
-                    <div className="flex items-center gap-2 truncate">
-                      <span className="w-6 h-6 rounded-full" style={{ backgroundColor: user.color }} />
-                      <span className="text-sm truncate">{user.username}</span>
+                  <button key={user.id} onClick={() => openChatWithSearch(user)} className="w-full p-3 hover:bg-gray-700 flex items-center gap-3 transition-colors border-b border-gray-700 last:border-0">
+                    <span className="w-8 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: user.color }} />
+                    <div className="text-left flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate">{user.username}</p>
+                      <p className="text-[10px] text-gray-500 truncate">Click to message</p>
                     </div>
-                    <button onClick={() => sendRequest(user)} className="p-1.5 bg-blue-600 rounded-md hover:bg-blue-500"><UserPlus size={14}/></button>
-                  </div>
+                    <UserPlus size={16} className="text-blue-400" />
+                  </button>
                 ))}
               </div>
             )}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
-          {pendingRequests.length > 0 && (
-            <div className="p-4">
-              <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2">Pending Requests</p>
-              {pendingRequests.map(r => (
-                <div key={r.id} className="flex items-center justify-between bg-blue-500/5 p-2 rounded-lg mb-2">
-                  <span className="text-sm truncate">{r.username}</span>
-                  <button onClick={() => acceptRequest(r)} className="p-1 bg-emerald-600 rounded hover:bg-emerald-500"><Check size={14}/></button>
-                </div>
+        <div className="flex-1 overflow-y-auto custom-scrollbar">
+          {messageRequests.length > 0 && (
+            <div className="px-2 mb-4">
+              <p className="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1.5"><Inbox size={12}/> Message Requests</p>
+              {messageRequests.map(r => (
+                <button 
+                  key={r.id} 
+                  onClick={() => { setActiveContact(r); if(window.innerWidth < 640) setShowSidebar(false); }}
+                  className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all mb-1 ${activeContact?.id === r.id ? 'bg-amber-500/20 border border-amber-500/30' : 'bg-amber-500/5 hover:bg-amber-500/10'}`}
+                >
+                  <span className="w-10 h-10 rounded-full flex-shrink-0" style={{ backgroundColor: r.color }} />
+                  <div className="text-left flex-1 min-w-0">
+                    <p className="text-sm font-bold truncate text-amber-400">{r.username}</p>
+                    <p className="text-[10px] text-amber-500/70 truncate italic font-medium text-xs">New message request</p>
+                  </div>
+                </button>
               ))}
             </div>
           )}
 
-          <div className="p-4">
-             <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2">Connections</p>
+          <div className="px-2">
+             <p className="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2">Connected</p>
              {contacts.map(c => (
                <button 
                 key={c.id} 
                 onClick={() => { setActiveContact(c); if(window.innerWidth < 640) setShowSidebar(false); }}
-                className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all mb-1 ${activeContact?.id === c.id ? 'bg-blue-600 shadow-lg' : 'hover:bg-gray-700/50'}`}
+                className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all mb-1 ${activeContact?.id === c.id ? 'bg-blue-600 shadow-lg shadow-blue-600/20' : 'hover:bg-gray-700/40'}`}
                >
                  <span className="w-10 h-10 rounded-full flex-shrink-0" style={{ backgroundColor: c.color }} />
-                 <div className="text-left overflow-hidden">
+                 <div className="text-left flex-1 min-w-0">
                     <p className="text-sm font-semibold truncate">{c.username}</p>
-                    <p className="text-xs text-gray-400 truncate">Click to chat</p>
+                    <p className="text-xs text-gray-400 truncate opacity-70">Active chat</p>
                  </div>
                </button>
              ))}
           </div>
         </div>
 
-        <div className="p-4 border-t border-gray-700/50 flex items-center justify-between">
+        <div className="p-4 border-t border-gray-700/50 flex items-center justify-between bg-gray-900/20">
            <div className="flex items-center gap-2 truncate">
-              <span className="w-8 h-8 rounded-full" style={{ backgroundColor: identity?.color }} />
-              <span className="text-sm font-medium truncate">{identity?.username}</span>
+              <span className="w-8 h-8 rounded-full border border-gray-700" style={{ backgroundColor: identity?.color }} />
+              <span className="text-sm font-bold truncate">{identity?.username}</span>
            </div>
-           <button onClick={handleLogout} className="text-gray-400 hover:text-rose-400"><LogOut size={18}/></button>
+           <button onClick={handleLogout} className="p-2 text-gray-400 hover:text-rose-400 hover:bg-rose-400/10 rounded-lg transition-all" title="Sign Out"><LogOut size={18}/></button>
         </div>
       </aside>
 
       {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 flex-shrink-0 border-b border-gray-700/50 bg-gray-800/30 flex items-center justify-between px-4 sm:px-6">
+      <main className="flex-1 flex flex-col min-w-0 bg-gray-900 shadow-2xl">
+        <header className="h-16 flex-shrink-0 border-b border-gray-700/50 bg-gray-800/20 flex items-center justify-between px-4 sm:px-6">
            <div className="flex items-center gap-3">
-              <button onClick={() => setShowSidebar(true)} className="sm:hidden text-gray-400 mr-2"><MessageSquare size={20}/></button>
+              <button onClick={() => setShowSidebar(true)} className="sm:hidden text-gray-400 p-2 hover:bg-gray-700 rounded-lg"><MessageSquare size={22}/></button>
               {activeContact ? (
                 <>
-                  <span className="w-8 h-8 rounded-full" style={{ backgroundColor: activeContact.color }} />
+                  <span className="w-9 h-9 rounded-full border border-gray-700" style={{ backgroundColor: activeContact.color }} />
                   <div>
-                    <h3 className="font-bold text-sm">{activeContact.username}</h3>
-                    <div className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+                    <h3 className="font-bold text-sm sm:text-base leading-tight">{activeContact.username}</h3>
+                    <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-medium">
                       <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                       online
                     </div>
                   </div>
                 </>
               ) : (
-                <h3 className="font-bold text-gray-400 italic">Select a contact to start chatting</h3>
+                <h3 className="font-semibold text-gray-500 italic text-sm">Open a conversation to begin</h3>
               )}
            </div>
-           <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium ${isOnline ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-              <Wifi size={14} /> {isOnline ? 'Network Active' : 'Offline'}
+           <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${isOnline ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
+              <Wifi size={14} /> <span className="hidden xs:inline">{isOnline ? 'Network Active' : 'Offline'}</span>
            </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+        {activeContact && messageRequests.find(r => r.id === activeContact.id) && (
+          <div className="bg-amber-500/10 border-b border-amber-500/20 p-3 flex items-center justify-between">
+            <p className="text-xs text-amber-400 font-medium ml-2">Message Request: Do you want to chat with {activeContact.username}?</p>
+            <button onClick={() => acceptRequest(messageRequests.find(r => r.id === activeContact.id))} className="bg-amber-500 hover:bg-amber-600 text-gray-900 text-xs font-bold py-1.5 px-4 rounded-lg transition-colors mr-2">Accept</button>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar">
+          {messages.length === 0 && activeContact && (
+            <div className="h-full flex flex-col items-center justify-center text-center opacity-30">
+               <MessageSquare size={48} className="mb-4" />
+               <p className="text-sm font-medium">No messages here yet.<br/>Start the conversation!</p>
+            </div>
+          )}
           {messages.map((msg, idx) => {
             const isMe = msg.sender_id === identity?.id;
             const showName = !isMe && (idx === 0 || messages[idx - 1].sender_id !== msg.sender_id);
             return (
               <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                {showName && <span className="text-[10px] font-bold mb-1 opacity-50" style={{ color: msg.color }}>{msg.sender}</span>}
+                {showName && <span className="text-[10px] font-bold mb-1 opacity-50 ml-1" style={{ color: msg.color }}>{msg.sender}</span>}
                 <div className="relative group max-w-[85%] sm:max-w-[70%]">
-                  <div className={`px-4 py-2.5 rounded-2xl ${isMe ? 'bg-blue-600 text-white rounded-br-sm shadow-blue-900/20' : 'bg-gray-800 text-gray-100 rounded-bl-sm border border-gray-700/50 shadow-black/20'} shadow-lg`}>
+                  <div className={`px-4 py-2.5 rounded-2xl ${isMe ? 'bg-blue-600 text-white rounded-br-sm shadow-blue-600/20' : 'bg-gray-800 text-gray-100 rounded-bl-sm border border-gray-700/50 shadow-black/40'} shadow-xl`}>
                     <div className="leading-relaxed whitespace-pre-wrap break-words text-sm sm:text-base">{renderContent(msg.content)}</div>
-                    {msg.edited && <div className="text-[9px] opacity-40 mt-1 text-right italic">edited</div>}
+                    {(msg.edited || msg.status === 'sent') && (
+                      <div className="mt-1 flex items-center justify-end gap-1 opacity-40 text-[9px] font-medium uppercase tracking-tighter italic">
+                        {msg.edited && <span>edited</span>}
+                      </div>
+                    )}
                   </div>
                   {isMe && (
-                    <div className="absolute top-0 right-full mr-2 opacity-0 group-hover:opacity-100 transition-opacity flex">
-                      <button onClick={() => setActiveMenuId(activeMenuId === msg.id ? null : msg.id)} className="p-1 text-gray-500 hover:text-gray-300"><MoreVertical size={16}/></button>
+                    <div className="absolute top-0 right-full mr-1 opacity-0 group-hover:opacity-100 transition-opacity flex">
+                      <button onClick={() => setActiveMenuId(activeMenuId === msg.id ? null : msg.id)} className="p-1.5 text-gray-500 hover:text-gray-300 rounded-lg hover:bg-gray-800 transition-colors"><MoreVertical size={16}/></button>
                       {activeMenuId === msg.id && (
-                        <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-30 py-1 overflow-hidden min-w-[100px]">
-                          <button onClick={() => { setEditingId(msg.id); setInput(msg.content); setActiveMenuId(null); }} className="w-full px-3 py-1.5 text-left text-xs hover:bg-gray-700 flex items-center gap-2"><Edit2 size={12}/> Edit</button>
-                          <button onClick={() => { if(confirm('Delete?')) { clientRef.current.deleteMessage(msg.id, activeContact.id); setMessages(prev => prev.filter(m => m.id !== msg.id)); } setActiveMenuId(null); }} className="w-full px-3 py-1.5 text-left text-xs hover:bg-rose-900/30 text-rose-400 flex items-center gap-2"><Trash2 size={12}/> Delete</button>
+                        <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-40 py-1.5 overflow-hidden min-w-[120px]">
+                          <button onClick={() => { setEditingId(msg.id); setInput(msg.content); setActiveMenuId(null); }} className="w-full px-4 py-2 text-left text-xs hover:bg-gray-700 flex items-center gap-2.5 font-medium"><Edit2 size={14}/> Edit</button>
+                          <button onClick={() => { if(confirm('Delete permanently?')) { clientRef.current.deleteMessage(msg.id, activeContact.id); setMessages(prev => prev.filter(m => m.id !== msg.id)); } setActiveMenuId(null); }} className="w-full px-4 py-2 text-left text-xs hover:bg-rose-900/30 text-rose-400 flex items-center gap-2.5 font-medium"><Trash2 size={14}/> Delete</button>
                         </div>
                       )}
                     </div>
@@ -366,21 +384,26 @@ export default function ChatPage() {
         </div>
 
         {/* Typing Area */}
-        <div className="h-6 px-6 text-[10px] text-gray-500 italic">
-          {Object.keys(typingUsers).filter(u => u !== identity?.username).join(', ')} typing...
+        <div className="h-6 px-6 text-[10px] text-gray-500 italic font-medium">
+          {Object.keys(typingUsers).filter(u => u !== identity?.username).length > 0 && (
+            <span className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" />
+              {Object.keys(typingUsers).filter(u => u !== identity?.username).join(', ')} typing...
+            </span>
+          )}
         </div>
 
-        <footer className="p-3 sm:p-4 bg-gray-900/80 backdrop-blur-lg border-t border-gray-800 relative">
-          {showEmoji && <div className="absolute bottom-full left-0 z-50 p-2"><EmojiPicker theme="dark" onEmojiClick={(e) => setInput(prev => prev + e.emoji)} width={300} height={400}/></div>}
-          <form onSubmit={handleSend} className={`max-w-4xl mx-auto flex items-end gap-1 sm:gap-2 bg-gray-800 rounded-3xl p-1 border transition-all ${!activeContact ? 'opacity-50 pointer-events-none' : 'border-gray-700'}`}>
-             <button type="button" onClick={() => setShowEmoji(!showEmoji)} className="p-2.5 text-gray-400 hover:text-blue-400"><Smile size={20}/></button>
+        <footer className="p-3 sm:p-5 bg-gray-900/80 backdrop-blur-xl border-t border-gray-800 relative z-20">
+          {showEmoji && <div className="absolute bottom-full left-4 z-50 p-2 mb-2 bg-gray-800 rounded-2xl shadow-2xl border border-gray-700"><EmojiPicker theme="dark" onEmojiClick={(e) => setInput(prev => prev + e.emoji)} width={300} height={380}/></div>}
+          <form onSubmit={handleSend} className={`max-w-4xl mx-auto flex items-end gap-1 sm:gap-2 bg-gray-800 border border-gray-700/80 rounded-[2rem] p-1.5 transition-all shadow-2xl focus-within:border-blue-500/50 ${!activeContact ? 'opacity-40 pointer-events-none grayscale' : ''}`}>
+             <button type="button" onClick={() => setShowEmoji(!showEmoji)} className={`p-2.5 rounded-full transition-all ${showEmoji ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-blue-400 hover:bg-blue-400/5'}`}><Smile size={20}/></button>
              <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="image/*" className="hidden" />
-             <button type="button" onClick={() => fileInputRef.current.click()} disabled={uploading} className="p-2.5 text-gray-400 hover:text-blue-400">
+             <button type="button" onClick={() => fileInputRef.current.click()} disabled={uploading} className="p-2.5 text-gray-400 hover:text-blue-400 rounded-full hover:bg-blue-400/5 transition-all">
                {uploading ? <Loader2 className="animate-spin" size={20}/> : <ImageIcon size={20}/>}
              </button>
-             <input type="text" value={input} onChange={(e) => { setInput(e.target.value); clientRef.current.sendTyping(identity.username, activeContact.id); }} placeholder={editingId ? "Edit..." : "Message..."} className="flex-1 bg-transparent px-2 py-3 outline-none text-gray-100 text-base" />
-             <button type="submit" disabled={!input.trim()} className={`p-3 m-1 rounded-full transition-colors ${editingId ? 'bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'}`}>
-                {editingId ? <Edit2 size={18}/> : <Send size={18}/>}
+             <input type="text" value={input} onChange={(e) => { setInput(e.target.value); if(activeContact) clientRef.current.sendTyping(identity.username, activeContact.id); }} placeholder={editingId ? "Correcting message..." : (activeContact ? `Message ${activeContact.username}...` : "Select a contact")} className="flex-1 bg-transparent px-2 py-3 outline-none text-gray-100 text-base placeholder:text-gray-500" />
+             <button type="submit" disabled={!input.trim()} className={`p-3 rounded-full transition-all flex-shrink-0 active:scale-90 shadow-xl ${editingId ? 'bg-amber-500 hover:bg-amber-400 shadow-amber-500/30' : 'bg-blue-600 hover:bg-blue-500 shadow-blue-600/30'}`}>
+                {editingId ? <Check size={20} className="text-gray-900"/> : <Send size={20} className="text-white ml-0.5"/>}
              </button>
           </form>
         </footer>
