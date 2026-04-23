@@ -6,6 +6,14 @@ const Bonjour = require('bonjour-service');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const fs = require('fs');
+require('dotenv').config({ path: '.env.local' });
+const { createClient } = require('@supabase/supabase-js');
+
+// Initialize Supabase
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''
+);
 
 // Global error handling to prevent crashes from internal library errors (like WS frame errors)
 process.on('uncaughtException', (err) => {
@@ -103,7 +111,13 @@ app.prepare().then(() => {
 
           // Save to DB
           try {
+            // 1. Save to Local SQLite
             insertMsg.run(chatData.id, chatData.sender, chatData.color, chatData.content, chatData.timestamp);
+
+            // 2. Sync to Supabase Cloud
+            supabase.from('messages').insert([chatData]).then(({ error }) => {
+              if (error) console.warn('Cloud sync failed (offline?):', error.message);
+            });
 
             // Broadcast to everyone else
             broadcast({ type: 'chat', data: chatData }, ws);
