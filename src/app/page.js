@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { Send, Wifi, WifiOff, LogOut } from 'lucide-react';
+import { Send, Wifi, WifiOff, LogOut, Search } from 'lucide-react';
 import { ChatClient } from '@/lib/chat-client';
 import Auth from '@/components/Auth';
 import { supabase } from '@/lib/supabase';
@@ -13,6 +13,9 @@ export default function ChatPage() {
   const [identity, setIdentity] = useState(null);
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
   
   const clientRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -73,6 +76,24 @@ export default function ChatPage() {
     await supabase.auth.signOut();
   };
 
+  const handleSearch = async (query) => {
+    setSearchQuery(query);
+    if (query.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+
+    setIsSearching(true);
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .or(`username.ilike.%${query}%,email.ilike.%${query}%`)
+      .limit(5);
+
+    if (!error) setSearchResults(data || []);
+    setIsSearching(false);
+  };
+
   if (authLoading) {
     return <div className="h-screen bg-gray-900 flex items-center justify-center text-gray-400">Loading...</div>;
   }
@@ -119,6 +140,40 @@ export default function ChatPage() {
             {identity?.username || 'User'}
           </p>
         </div>
+        <div className="flex-1 max-w-md mx-8 relative hidden md:block">
+          <div className="relative">
+            <Search className="absolute left-3 top-2.5 text-gray-500" size={18} />
+            <input
+              type="text"
+              placeholder="Search users by name or email..."
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              className="w-full bg-gray-900/50 border border-gray-700 rounded-full py-2 pl-10 pr-4 outline-none focus:border-blue-500 transition-all text-sm"
+            />
+          </div>
+          
+          {/* Search Results Dropdown */}
+          {searchQuery.length >= 2 && (
+            <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-50">
+              {isSearching ? (
+                <div className="p-4 text-center text-sm text-gray-400">Searching...</div>
+              ) : searchResults.length > 0 ? (
+                searchResults.map((user) => (
+                  <div key={user.id} className="p-3 hover:bg-gray-700/50 flex items-center gap-3 border-b border-gray-700 last:border-0">
+                    <span className="w-8 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: user.color }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate">{user.username}</p>
+                      <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="p-4 text-center text-sm text-gray-400">No users found</div>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="flex items-center gap-4">
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
             isOnline ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
