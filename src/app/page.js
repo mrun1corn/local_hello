@@ -222,7 +222,7 @@ export default function ChatPage() {
   if (!session) return <Auth onAuthComplete={() => window.location.reload()} />;
 
   return (
-    <div className="flex h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 overflow-hidden">
+    <div className="flex h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 overflow-hidden text-left">
       <Toaster />
       <aside className={`${showSidebar ? 'w-full sm:w-80' : 'w-0'} bg-gray-800/40 border-r border-gray-700/50 flex flex-col transition-all overflow-hidden z-30`}>
         <div className="p-5 border-b border-gray-700/50 flex items-center justify-between">
@@ -261,14 +261,20 @@ export default function ChatPage() {
             <div className="p-4">
               <div className="relative group">
                 <Search className="absolute left-3 top-2.5 text-gray-500" size={16} />
-                <input type="text" placeholder="Search people..." value={searchQuery} onChange={(e) => handleSearch(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl py-2 pl-9 pr-4 text-sm outline-none focus:border-blue-500" />
-                {searchResults.length > 0 && (
-                  <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden">
-                    {searchResults.map(user => (
-                      <button key={user.id} onClick={() => { setActiveContact(user); setSearchQuery(''); setSearchResults([]); if(window.innerWidth < 640) setShowSidebar(false); }} className="w-full p-3 hover:bg-gray-700 flex items-center gap-3 border-b border-gray-700 last:border-0 text-left">
-                        <span className="w-8 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: user.color }} /><p className="text-sm font-semibold truncate flex-1">{user.username}</p><UserPlus size={16} className="text-blue-400" />
-                      </button>
-                    ))}
+                <input type="text" placeholder="Search people..." value={searchQuery} onChange={(e) => handleSearch(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-xl py-2.5 pl-9 pr-4 text-sm outline-none focus:border-blue-500" />
+                {searchQuery.length >= 2 && (
+                  <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-[100] overflow-hidden">
+                    {isSearching ? (
+                      <div className="p-4 text-center text-xs text-gray-500 flex items-center justify-center gap-2"><Loader2 className="animate-spin" size={14}/> Searching...</div>
+                    ) : searchResults.length > 0 ? (
+                      searchResults.map(user => (
+                        <button key={user.id} onClick={() => { setActiveContact(user); setSearchQuery(''); setSearchResults([]); if(window.innerWidth < 640) setShowSidebar(false); }} className="w-full p-3 hover:bg-gray-700 flex items-center gap-3 border-b border-gray-700 last:border-0 text-left">
+                          <span className="w-8 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: user.color }} /><p className="text-sm font-semibold truncate flex-1">{user.username}</p><UserPlus size={16} className="text-blue-400" />
+                        </button>
+                      ))
+                    ) : (
+                      <div className="p-4 text-center text-xs text-gray-500 italic">No users found</div>
+                    )}
                   </div>
                 )}
               </div>
@@ -301,12 +307,12 @@ export default function ChatPage() {
 
       <main className="flex-1 flex flex-col min-w-0 bg-gray-900">
         <header className="h-16 flex-shrink-0 border-b border-gray-700/50 bg-gray-800/20 flex items-center justify-between px-4 sm:px-6">
-           <div className="flex items-center gap-3 overflow-hidden">
+           <div className="flex items-center gap-3 overflow-hidden text-left">
               <button onClick={() => setShowSidebar(true)} className="sm:hidden text-gray-400 p-2 hover:bg-gray-700 rounded-lg"><MessageSquare size={22}/></button>
               {activeContact && (
                 <>
                   <span className="w-9 h-9 rounded-full border border-gray-700 flex-shrink-0" style={{ backgroundColor: activeContact.color }} />
-                  <div className="min-w-0"><h3 className="font-bold text-sm sm:text-base leading-tight truncate">{activeContact.username}</h3><div className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium">online</div></div>
+                  <div className="min-w-0 text-left"><h3 className="font-bold text-sm sm:text-base leading-tight truncate">{activeContact.username}</h3><div className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium">online</div></div>
                 </>
               )}
            </div>
@@ -336,7 +342,7 @@ export default function ChatPage() {
             const isMe = msg.sender_id === identity?.id;
             return (
               <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                <div className="relative group max-w-[85%] sm:max-w-[70%]">
+                <div className="relative group max-w-[85%] sm:max-w-[70%] text-left">
                   <div className={`px-4 py-2.5 rounded-2xl ${isMe ? 'bg-blue-600 text-white rounded-br-sm shadow-blue-600/20' : 'bg-gray-800 text-gray-100 rounded-bl-sm border border-gray-700/50 shadow-black/40'} shadow-xl`}>
                     <div className="leading-relaxed whitespace-pre-wrap break-words text-sm sm:text-base">{renderContent(msg.content, msgSearch)}</div>
                     <div className="mt-1 flex items-center justify-end gap-1 opacity-40 text-[9px] font-bold uppercase italic">
@@ -361,7 +367,7 @@ export default function ChatPage() {
           })}
           <div ref={messagesEndRef} className="h-4" />
         </div>
-        <div className="h-6 px-6 text-[10px] text-gray-500 italic font-medium">
+        <div className="h-6 px-6 text-[10px] text-gray-500 italic font-medium text-left">
           {Object.keys(typingUsers).filter(u => u !== identity?.username).length > 0 && <span className="flex items-center gap-2"><span className="w-1 h-1 bg-blue-500 rounded-full animate-ping" /> Someone is typing...</span>}
         </div>
         <footer className="p-2 sm:p-5 bg-gray-900/80 backdrop-blur-xl border-t border-gray-800 relative z-20">
