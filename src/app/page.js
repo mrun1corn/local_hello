@@ -296,7 +296,11 @@ export default function ChatPage() {
             <div className="flex-1 overflow-y-auto px-2">
               {messageRequests.length > 0 && (
                 <div className="mb-4">
-                  <p className="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1.5"><Inbox size={12}/> Requests</p>
+                  <p className="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1.5 relative">
+                <Inbox size={12}/> 
+                Requests
+                <span className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-pulse" />
+              </p>
                   {messageRequests.map(r => (
                     <button key={r.id} onClick={() => { setActiveContact(r); if(window.innerWidth < 640) setShowSidebar(false); }} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all mb-1 ${activeContact?.id === r.id ? 'bg-amber-500/20' : 'bg-amber-500/5 hover:bg-amber-500/10'}`}>
                       <span className="w-10 h-10 rounded-full flex-shrink-0" style={{ backgroundColor: r.color }} /><div className="text-left flex-1 min-w-0"><p className="text-sm font-bold truncate text-amber-400">{r.username}</p></div>
@@ -322,7 +326,12 @@ export default function ChatPage() {
       <main className="flex-1 flex flex-col min-w-0 bg-gray-900">
         <header className="h-16 flex-shrink-0 border-b border-gray-700/50 bg-gray-800/20 flex items-center justify-between px-4 sm:px-6">
            <div className="flex items-center gap-3 overflow-hidden text-left">
-              <button onClick={() => setShowSidebar(true)} className="sm:hidden text-gray-400 p-2 hover:bg-gray-700 rounded-lg"><MessageSquare size={22}/></button>
+              <button onClick={() => setShowSidebar(true)} className="sm:hidden text-gray-400 p-2 hover:bg-gray-700 rounded-lg relative">
+                <MessageSquare size={22}/>
+                {messageRequests.length > 0 && (
+                  <span className="absolute top-1 right-1 w-3 h-3 bg-rose-500 rounded-full border-2 border-gray-900" />
+                )}
+              </button>
               {activeContact && (
                 <>
                   <span className="w-9 h-9 rounded-full border border-gray-700 flex-shrink-0" style={{ backgroundColor: activeContact.color }} />
