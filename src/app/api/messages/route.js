@@ -2,48 +2,52 @@ import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { supabase } from '@/lib/supabase';
 
-// Fallback in-memory store for local development without Supabase
-let globalMessages = [];
-
 export async function GET(request) {
-  try {
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .order('timestamp', { ascending: false })
-      .limit(100);
+  const { searchParams } = new URL(request.url);
+  const userId = searchParams.get('user_id');
+  const contactId = searchParams.get('contact_id');
 
+  if (!userId) return NextResponse.json({ data: [] });
+
+  try {
+    let query = supabase.from('messages').select('*');
+    
+    if (contactId) {
+      // Fetch private conversation
+      query = query.or(`and(sender_id.eq.${userId},receiver_id.eq.${contactId}),and(sender_id.eq.${contactId},receiver_id.eq.${userId})`);
+    } else {
+      // Fetch all messages involving the user (for notification/sync)
+      query = query.or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
+    }
+
+    const { data, error } = await query.order('timestamp', { ascending: true }).limit(100);
     if (error) throw error;
-    return NextResponse.json({ data: data.reverse() });
+    return NextResponse.json({ data });
   } catch (error) {
     console.error('Supabase fetch error:', error.message);
-    return NextResponse.json({ data: globalMessages });
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
 export async function POST(request) {
   try {
     const body = await request.json();
-    
     const msg = {
       id: body.id || crypto.randomUUID(),
-      sender: body.sender || 'Anonymous',
-      color: body.color || '#3b82f6',
+      sender: body.sender,
+      sender_id: body.sender_id,
+      receiver_id: body.receiver_id,
+      color: body.color,
       content: body.content,
-      timestamp: body.timestamp || Date.now()
+      timestamp: body.timestamp || Date.now(),
+      is_read: false
     };
 
-    // Try Supabase first
     const { error } = await supabase.from('messages').insert([msg]);
-    
-    if (error) {
-      console.warn('Supabase insert failed, falling back to memory:', error.message);
-      globalMessages.push(msg);
-      if (globalMessages.length > 100) globalMessages = globalMessages.slice(-100);
-    }
+    if (error) throw error;
 
     return NextResponse.json({ success: true, data: msg });
   } catch (error) {
-    return NextResponse.json({ error: 'Failed to save message' }, { status: 500 });
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

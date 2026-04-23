@@ -9,16 +9,14 @@ const fs = require('fs');
 require('dotenv').config({ path: '.env.local' });
 const { createClient } = require('@supabase/supabase-js');
 
-// Initialize Supabase
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''
 );
 
-// Global error handling
 process.on('uncaughtException', (err) => {
   if (err.code === 'WS_ERR_INVALID_CLOSE_CODE' || err.message.includes('Invalid WebSocket frame')) {
-    console.error('WebSocket frame error suppressed');
+    console.error('WS Frame Error Suppressed');
   } else {
     console.error('Uncaught Exception:', err);
     process.exit(1);
@@ -61,10 +59,9 @@ db.exec(`
 
 const insertMsg = db.prepare('INSERT INTO messages (id, sender, sender_id, receiver_id, color, content, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)');
 const markRead = db.prepare('UPDATE messages SET is_read = 1 WHERE id = ?');
-const updateMsg = db.prepare('UPDATE messages SET content = ? WHERE id = ?');
-const deleteMsg = db.prepare('DELETE FROM messages WHERE id = ?');
 const addBlock = db.prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id) VALUES (?, ?)');
 const checkBlocked = db.prepare('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?');
+const getHistory = db.prepare('SELECT * FROM messages WHERE sender_id = ? OR receiver_id = ? ORDER BY timestamp ASC LIMIT 100');
 
 app.prepare().then(() => {
   const server = createServer((req, res) => {
@@ -76,12 +73,17 @@ app.prepare().then(() => {
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString());
-        if (msg.type === 'auth') { ws.user_id = msg.data.id; return; }
+        
+        if (msg.type === 'auth') { 
+          ws.user_id = msg.data.id; 
+          // Send history for this user
+          const history = getHistory.all(ws.user_id, ws.user_id);
+          ws.send(JSON.stringify({ type: 'history', data: history }));
+          return; 
+        }
 
         if (msg.type === 'chat') {
-          // Check if receiver has blocked sender
           if (checkBlocked.get(msg.data.receiver_id, ws.user_id)) return;
-
           const chatData = { ...msg.data, timestamp: Date.now() };
           try {
             insertMsg.run(chatData.id, chatData.sender, ws.user_id, chatData.receiver_id, chatData.color, chatData.content, chatData.timestamp);
@@ -92,28 +94,24 @@ app.prepare().then(() => {
               }
             });
             ws.send(JSON.stringify({ type: 'ack', id: chatData.id }));
-          } catch (e) { console.error(e); }
+          } catch (e) { console.error('DB Error:', e); }
         } else if (msg.type === 'read') {
           markRead.run(msg.data.id);
           supabase.from('messages').update({ is_read: true }).eq('id', msg.data.id).then(() => {});
-          wss.clients.forEach(c => {
-            if (c.readyState === 1 && c.user_id === msg.data.receiver_id) c.send(JSON.stringify(msg));
-          });
+          wss.clients.forEach(c => { if (c.readyState === 1 && c.user_id === msg.data.receiver_id) c.send(JSON.stringify(msg)); });
         } else if (msg.type === 'block') {
           addBlock.run(ws.user_id, msg.data.blocked_id);
           supabase.from('blocked_users').insert([{ blocker_id: ws.user_id, blocked_id: msg.data.blocked_id }]).then(() => {});
         } else {
-          wss.clients.forEach(c => {
-            if (c.readyState === 1 && c.user_id === msg.data.receiver_id) c.send(JSON.stringify(msg));
-          });
+          // Forward typing/edit/delete events
+          wss.clients.forEach(c => { if (c.readyState === 1 && c.user_id === msg.data.receiver_id) c.send(JSON.stringify(msg)); });
         }
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error('WS Message Error:', e); }
     });
   });
 
   try {
-    const BonjourService = require('bonjour-service');
-    const bonjour = new BonjourService.Bonjour();
+    const bonjour = new Bonjour.Bonjour();
     bonjour.publish({ name: 'LocalChat', type: 'http', port });
   } catch (e) {}
 

@@ -16,19 +16,10 @@ export class ChatClient {
   async init() {
     this.loadQueueFromDB();
     const isLocal = typeof window !== 'undefined' && 
-      (window.location.hostname === 'localhost' || 
-       window.location.hostname === '127.0.0.1' || 
-       window.location.hostname.endsWith('.local') ||
-       window.location.hostname.startsWith('192.168.') ||
-       window.location.hostname.startsWith('10.') ||
-       /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(window.location.hostname));
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-    if (isLocal) {
-      this.connectWebSocket();
-    } else {
-      this.usePolling = true;
-      this.startPolling();
-    }
+    if (isLocal) this.connectWebSocket();
+    else { this.usePolling = true; this.startPolling(); }
     window.addEventListener('online', () => this.syncQueue());
   }
 
@@ -49,7 +40,8 @@ export class ChatClient {
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'chat') this.onMessage(msg.data);
+        if (msg.type === 'history') msg.data.forEach(m => this.onMessage(m));
+        else if (msg.type === 'chat') this.onMessage(msg.data);
         else if (msg.type === 'edit') this.onMessage({ ...msg.data, type: 'edit' });
         else if (msg.type === 'delete') this.onMessage({ id: msg.data.id, type: 'delete' });
         else if (msg.type === 'typing') this.onMessage({ ...msg.data, type: 'typing' });
@@ -85,12 +77,10 @@ export class ChatClient {
   editMessage(id, receiver_id, content) {
     const data = { id, receiver_id, content };
     if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'edit', data }));
-    else fetch('/api/messages', { method: 'PATCH', body: JSON.stringify(data) });
   }
 
   deleteMessage(id, receiver_id) {
     if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'delete', data: { id, receiver_id } }));
-    else fetch('/api/messages', { method: 'DELETE', body: JSON.stringify({ id, receiver_id }) });
   }
 
   startPolling() {
@@ -100,7 +90,7 @@ export class ChatClient {
 
   async fetchMessages() {
     try {
-      const res = await fetch('/api/messages?receiver_id=' + this.user_id);
+      const res = await fetch(`/api/messages?user_id=${this.user_id}`);
       if (res.ok) {
         const json = await res.json();
         if (json.data) json.data.forEach(m => this.onMessage(m));
@@ -119,7 +109,11 @@ export class ChatClient {
 
   async pushViaAPI(msg) {
     try {
-      const res = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(msg) });
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(msg)
+      });
       if (res.ok) this.markAsSent(msg.id); else this.queueMessage(msg);
     } catch (e) { this.queueMessage(msg); }
   }
