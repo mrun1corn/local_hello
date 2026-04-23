@@ -47,16 +47,25 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     sender TEXT NOT NULL,
+    receiver_id TEXT,
     color TEXT NOT NULL,
     content TEXT NOT NULL,
     timestamp INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS connections (
+    id TEXT PRIMARY KEY,
+    sender_id TEXT NOT NULL,
+    receiver_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
 
-const insertMsg = db.prepare('INSERT INTO messages (id, sender, color, content, timestamp) VALUES (?, ?, ?, ?, ?)');
+const insertMsg = db.prepare('INSERT INTO messages (id, sender, receiver_id, color, content, timestamp) VALUES (?, ?, ?, ?, ?, ?)');
 const updateMsg = db.prepare('UPDATE messages SET content = ? WHERE id = ?');
 const deleteMsg = db.prepare('DELETE FROM messages WHERE id = ?');
-const getRecentMsgs = db.prepare('SELECT * FROM messages ORDER BY timestamp DESC LIMIT 50');
+const getRecentMsgs = db.prepare('SELECT * FROM messages WHERE (sender = ? AND receiver_id = ?) OR (sender = ? AND receiver_id = ?) ORDER BY timestamp DESC LIMIT 50');
 
 app.prepare().then(() => {
   const server = createServer((req, res) => {
@@ -88,71 +97,57 @@ app.prepare().then(() => {
   };
 
   wss.on('connection', (ws) => {
-    // Individual socket error handling
+    // ... (individual socket handling)
     ws.on('error', (err) => {
       console.error('Individual WebSocket Error:', err.message);
     });
-
-    // Send message history to the new client
-    const history = getRecentMsgs.all().reverse(); // Show oldest first
-    ws.send(JSON.stringify({ type: 'history', data: history }));
 
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString());
         
+        // Store user_id on the socket for private routing
+        if (msg.type === 'auth') {
+          ws.user_id = msg.data.id;
+          return;
+        }
+
         if (msg.type === 'chat') {
-          // ... (existing chat logic)
-          // Add server timestamp and ID if missing
           const chatData = {
             id: msg.data.id || crypto.randomUUID(),
             sender: msg.data.sender || 'Anonymous',
+            receiver_id: msg.data.receiver_id,
             color: msg.data.color || '#3b82f6',
             content: msg.data.content,
             timestamp: msg.data.timestamp || Date.now()
           };
 
-          // Save to DB
           try {
-            // 1. Save to Local SQLite
-            insertMsg.run(chatData.id, chatData.sender, chatData.color, chatData.content, chatData.timestamp);
-
-            // 2. Sync to Supabase Cloud
-            supabase.from('messages').insert([chatData]).then(({ error }) => {
-              if (error) console.warn('Cloud sync failed (offline?):', error.message);
-            });
-
-            // Broadcast to everyone else
-            broadcast({ type: 'chat', data: chatData }, ws);
+            insertMsg.run(chatData.id, chatData.sender, chatData.receiver_id, chatData.color, chatData.content, chatData.timestamp);
             
-            // Send ack back to sender
+            // Sync to Cloud
+            supabase.from('messages').insert([chatData]).then(({ error }) => {
+              if (error) console.warn('Cloud sync failed');
+            });
+
+            // Private Broadcast: Send only to receiver and sender's other tabs
+            wss.clients.forEach((client) => {
+              if (client.readyState === 1 && (client.user_id === chatData.receiver_id || client.user_id === ws.user_id)) {
+                if (client !== ws) client.send(JSON.stringify({ type: 'chat', data: chatData }));
+              }
+            });
+            
             ws.send(JSON.stringify({ type: 'ack', id: chatData.id }));
-          } catch (dbErr) {
-            console.error('Database or Broadcast error:', dbErr);
-            ws.send(JSON.stringify({ type: 'error', message: 'Failed to process message' }));
-          }
-        } else if (msg.type === 'edit') {
-          try {
-            updateMsg.run(msg.data.content, msg.data.id);
-            supabase.from('messages').update({ content: msg.data.content }).eq('id', msg.data.id).then(({error}) => {
-               if (error) console.warn('Cloud edit sync failed');
-            });
-            broadcast({ type: 'edit', data: msg.data }, ws);
-          } catch (e) { console.error('Edit error:', e); }
-        } else if (msg.type === 'delete') {
-          try {
-            deleteMsg.run(msg.data.id);
-            supabase.from('messages').delete().eq('id', msg.data.id).then(({error}) => {
-               if (error) console.warn('Cloud delete sync failed');
-            });
-            broadcast({ type: 'delete', data: msg.data }, ws);
-          } catch (e) { console.error('Delete error:', e); }
-        } else if (msg.type === 'typing') {
-          broadcast({ type: 'typing', data: msg.data }, ws);
+          } catch (dbErr) { console.error(dbErr); }
+        } else if (msg.type === 'edit' || msg.type === 'delete' || msg.type === 'typing') {
+          // Broadcast these to the specific receiver
+          wss.clients.forEach((client) => {
+            if (client.readyState === 1 && client.user_id === msg.data.receiver_id) {
+               client.send(JSON.stringify(msg));
+            }
+          });
         }
-      } catch (e) {
-        console.error('Failed to process message', e);
-      }
+      } catch (e) { console.error(e); }
     });
   });
 
