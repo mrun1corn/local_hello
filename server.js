@@ -54,6 +54,8 @@ db.exec(`
 `);
 
 const insertMsg = db.prepare('INSERT INTO messages (id, sender, color, content, timestamp) VALUES (?, ?, ?, ?, ?)');
+const updateMsg = db.prepare('UPDATE messages SET content = ? WHERE id = ?');
+const deleteMsg = db.prepare('DELETE FROM messages WHERE id = ?');
 const getRecentMsgs = db.prepare('SELECT * FROM messages ORDER BY timestamp DESC LIMIT 50');
 
 app.prepare().then(() => {
@@ -100,6 +102,7 @@ app.prepare().then(() => {
         const msg = JSON.parse(data.toString());
         
         if (msg.type === 'chat') {
+          // ... (existing chat logic)
           // Add server timestamp and ID if missing
           const chatData = {
             id: msg.data.id || crypto.randomUUID(),
@@ -128,6 +131,24 @@ app.prepare().then(() => {
             console.error('Database or Broadcast error:', dbErr);
             ws.send(JSON.stringify({ type: 'error', message: 'Failed to process message' }));
           }
+        } else if (msg.type === 'edit') {
+          try {
+            updateMsg.run(msg.data.content, msg.data.id);
+            supabase.from('messages').update({ content: msg.data.content }).eq('id', msg.data.id).then(({error}) => {
+               if (error) console.warn('Cloud edit sync failed');
+            });
+            broadcast({ type: 'edit', data: msg.data }, ws);
+          } catch (e) { console.error('Edit error:', e); }
+        } else if (msg.type === 'delete') {
+          try {
+            deleteMsg.run(msg.data.id);
+            supabase.from('messages').delete().eq('id', msg.data.id).then(({error}) => {
+               if (error) console.warn('Cloud delete sync failed');
+            });
+            broadcast({ type: 'delete', data: msg.data }, ws);
+          } catch (e) { console.error('Delete error:', e); }
+        } else if (msg.type === 'typing') {
+          broadcast({ type: 'typing', data: msg.data }, ws);
         }
       } catch (e) {
         console.error('Failed to process message', e);

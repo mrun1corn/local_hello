@@ -61,6 +61,12 @@ export class ChatClient {
           msg.data.forEach(m => this.onMessage(m));
         } else if (msg.type === 'chat') {
           this.onMessage(msg.data);
+        } else if (msg.type === 'edit') {
+          this.onMessage({ ...msg.data, type: 'edit' });
+        } else if (msg.type === 'delete') {
+          this.onMessage({ id: msg.data.id, type: 'delete' });
+        } else if (msg.type === 'typing') {
+          this.onMessage({ ...msg.data, type: 'typing' });
         } else if (msg.type === 'ack') {
           this.markAsSent(msg.id);
         } else if (msg.type === 'error') {
@@ -99,6 +105,37 @@ export class ChatClient {
       console.error('WebSocket connection failed.');
       this.ws.close();
     };
+  }
+
+  sendTyping(sender) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'typing', data: { sender } }));
+    }
+  }
+
+  editMessage(id, content) {
+    const data = { id, content };
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'edit', data }));
+    } else {
+      fetch('/api/messages', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    }
+  }
+
+  deleteMessage(id) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'delete', data: { id } }));
+    } else {
+      fetch('/api/messages', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+    }
   }
 
   // --- VERCEL MODE (API Polling) ---
