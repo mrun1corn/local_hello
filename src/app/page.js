@@ -135,6 +135,13 @@ export default function ChatPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // 5MB Limit
+    const MAX_SIZE = 5 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      alert('File is too large! Please choose an image under 5MB.');
+      return;
+    }
+
     setUploading(true);
     const fileExt = file.name.split('.').pop();
     const fileName = `${Math.random()}.${fileExt}`;
