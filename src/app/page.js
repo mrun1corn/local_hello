@@ -18,7 +18,6 @@ const renderContent = (content, highlight = '') => {
       if (isImage) return <img key={i} src={part} alt="attachment" className="max-w-full rounded-lg mt-2 mb-2 shadow-sm border border-gray-700/50" onLoad={() => window.scrollTo(0, document.body.scrollHeight)} />;
       return <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline break-all hover:text-blue-300">{part}</a>;
     }
-    // Highlight search term
     if (highlight && part.toLowerCase().includes(highlight.toLowerCase())) {
       const subParts = part.split(new RegExp(`(${highlight})`, 'gi'));
       return subParts.map((sp, j) => sp.toLowerCase() === highlight.toLowerCase() ? <mark key={`${i}-${j}`} className="bg-yellow-500/30 text-yellow-200 rounded px-0.5">{sp}</mark> : sp);
@@ -35,7 +34,6 @@ export default function ChatPage() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   
-  // Contacts & UI
   const [contacts, setContacts] = useState([]);
   const [messageRequests, setMessageRequests] = useState([]);
   const [activeContact, setActiveContact] = useState(null);
@@ -43,19 +41,16 @@ export default function ChatPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   
-  // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [msgSearch, setMsgSearch] = useState('');
   const [showMsgSearch, setShowMsgSearch] = useState(false);
   
-  // Block & Profile
   const [blockedProfiles, setBlockedProfiles] = useState([]);
   const [editingProfile, setEditingProfile] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   
-  // Message States
   const [uploading, setUploading] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [typingUsers, setTypingUsers] = useState({});
@@ -77,9 +72,7 @@ export default function ChatPage() {
       }
       setAuthLoading(false);
     });
-
     if ("Notification" in window) setNotificationsEnabled(Notification.permission === "granted");
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       if (session) {
@@ -115,9 +108,7 @@ export default function ChatPage() {
   };
 
   const handleNewMessage = useCallback((msg) => {
-    const isBlocked = blockedProfiles.some(b => b.id === msg.sender_id);
-    if (isBlocked) return;
-
+    if (blockedProfiles.some(b => b.id === msg.sender_id)) return;
     if (msg.type === 'typing') {
       if (msg.receiver_id === identity?.id) setTypingUsers(prev => ({ ...prev, [msg.sender]: Date.now() }));
       return;
@@ -137,9 +128,7 @@ export default function ChatPage() {
         });
         if (msg.sender_id !== identity?.id) {
           clientRef.current.markRead(msg.id, msg.sender_id);
-          if (notificationsEnabled && document.hidden) {
-            new Notification(`New message from ${msg.sender}`, { body: msg.content.substring(0, 50) });
-          }
+          if (notificationsEnabled && document.hidden) new Notification(`New message from ${msg.sender}`, { body: msg.content.substring(0, 50) });
         }
       } else if (msg.receiver_id === identity?.id) {
         loadConnections(identity.id);
@@ -189,16 +178,42 @@ export default function ChatPage() {
     toast.success("User unblocked");
   };
 
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const MAX_SIZE = 5 * 1024 * 1024;
+    if (file.size > MAX_SIZE) { alert('File is too large! Please choose an image under 5MB.'); return; }
+    setUploading(true);
+    const fileName = `${Math.random()}.${file.name.split('.').pop()}`;
+    const filePath = `chat/${fileName}`;
+    try {
+      const { error } = await supabase.storage.from('chat-attachments').upload(filePath, file);
+      if (error) throw error;
+      const { data: { publicUrl } } = supabase.storage.from('chat-attachments').getPublicUrl(filePath);
+      clientRef.current.sendMessage({ id: crypto.randomUUID(), sender: identity.username, sender_id: identity.id, receiver_id: activeContact.id, color: identity.color, content: publicUrl, timestamp: Date.now() });
+    } catch (error) { toast.error('Failed to upload image.'); } finally { setUploading(false); }
+  };
+
   const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim() || !activeContact) return;
-    const chatData = { id: crypto.randomUUID(), sender: identity.username, sender_id: identity.id, receiver_id: activeContact.id, color: identity.color, content: input.trim(), timestamp: Date.now() };
+    const isConnected = contacts.find(c => c.id === activeContact.id);
+    if (!isConnected) { await supabase.from('connections').insert([{ sender_id: identity.id, receiver_id: activeContact.id, status: 'pending' }]); loadConnections(identity.id); }
     if (editingId) {
       clientRef.current.editMessage(editingId, activeContact.id, input.trim());
       setMessages(prev => prev.map(m => m.id === editingId ? { ...m, content: input.trim(), edited: true } : m));
       setEditingId(null);
-    } else clientRef.current.sendMessage(chatData);
+    } else clientRef.current.sendMessage({ id: crypto.randomUUID(), sender: identity.username, sender_id: identity.id, receiver_id: activeContact.id, color: identity.color, content: input.trim(), timestamp: Date.now() });
     setInput(''); setShowEmoji(false);
+  };
+
+  const handleSearch = async (query) => {
+    setSearchQuery(query);
+    if (query.length < 2) { setSearchResults([]); return; }
+    setIsSearching(true);
+    const { data } = await supabase.from('profiles').select('*').or(`username.ilike.%${query}%,email.ilike.%${query}%`).neq('id', identity.id).limit(5);
+    setSearchResults(data || []);
+    setIsSearching(false);
   };
 
   const filteredMessages = msgSearch ? messages.filter(m => m.content.toLowerCase().includes(msgSearch.toLowerCase())) : messages;
@@ -209,8 +224,6 @@ export default function ChatPage() {
   return (
     <div className="flex h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 overflow-hidden">
       <Toaster />
-      
-      {/* Sidebar */}
       <aside className={`${showSidebar ? 'w-full sm:w-80' : 'w-0'} bg-gray-800/40 border-r border-gray-700/50 flex flex-col transition-all overflow-hidden z-30`}>
         <div className="p-5 border-b border-gray-700/50 flex items-center justify-between">
            <h2 className="font-bold flex items-center gap-2 text-lg text-blue-400"><MessageSquare size={20}/> Chats</h2>
@@ -219,7 +232,6 @@ export default function ChatPage() {
              <button onClick={() => setShowSidebar(false)} className="sm:hidden p-2 text-gray-400"><X size={20}/></button>
            </div>
         </div>
-
         {showSettings ? (
           <div className="flex-1 p-5 space-y-6 overflow-y-auto">
              <div className="flex items-center justify-between"><h3 className="font-bold text-sm uppercase text-gray-500 tracking-wider">Settings</h3><button onClick={() => setShowSettings(false)} className="text-xs text-blue-400 font-bold">Done</button></div>
@@ -227,27 +239,18 @@ export default function ChatPage() {
                 <div className="bg-gray-900/50 p-4 rounded-2xl border border-gray-700/50">
                    <p className="text-xs font-bold text-gray-500 mb-3 uppercase">Profile</p>
                    {editingProfile ? (
-                     <div className="flex gap-2">
-                        <input value={newUsername} onChange={e => setNewUsername(e.target.value)} className="bg-gray-800 border border-gray-600 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-blue-500 flex-1" />
-                        <button onClick={updateProfile} className="p-2 bg-blue-600 rounded-lg"><Check size={16}/></button>
-                     </div>
+                     <div className="flex gap-2"><input value={newUsername} onChange={e => setNewUsername(e.target.value)} className="bg-gray-800 border border-gray-600 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-blue-500 flex-1" /><button onClick={updateProfile} className="p-2 bg-blue-600 rounded-lg"><Check size={16}/></button></div>
                    ) : (
                      <div className="flex items-center justify-between"><span className="text-sm font-medium">{identity.username}</span><button onClick={() => setEditingProfile(true)} className="text-xs text-blue-400">Edit</button></div>
                    )}
                 </div>
                 <div className="bg-gray-900/50 p-4 rounded-2xl border border-gray-700/50">
-                   <div className="flex items-center justify-between">
-                      <p className="text-xs font-bold text-gray-500 uppercase">Notifications</p>
-                      <button onClick={requestNotificationPermission}>{notificationsEnabled ? <Bell className="text-emerald-400" size={18}/> : <BellOff className="text-gray-600" size={18}/>}</button>
-                   </div>
+                   <div className="flex items-center justify-between"><p className="text-xs font-bold text-gray-500 uppercase">Notifications</p><button onClick={requestNotificationPermission}>{notificationsEnabled ? <Bell className="text-emerald-400" size={18}/> : <BellOff className="text-gray-600" size={18}/>}</button></div>
                 </div>
                 <div className="space-y-2">
                    <p className="text-xs font-bold text-gray-500 uppercase px-1">Blocked Users</p>
                    {blockedProfiles.map(p => (
-                     <div key={p.id} className="flex items-center justify-between bg-rose-500/5 p-3 rounded-xl border border-rose-500/10">
-                        <span className="text-sm font-medium">{p.username}</span>
-                        <button onClick={() => unblockUser(p.id)} className="text-[10px] font-bold text-rose-400 hover:underline">Unblock</button>
-                     </div>
+                     <div key={p.id} className="flex items-center justify-between bg-rose-500/5 p-3 rounded-xl border border-rose-500/10"><span className="text-sm font-medium">{p.username}</span><button onClick={() => unblockUser(p.id)} className="text-[10px] font-bold text-rose-400 hover:underline">Unblock</button></div>
                    ))}
                    {blockedProfiles.length === 0 && <p className="text-xs text-gray-600 italic px-1">No blocked users</p>}
                 </div>
@@ -263,9 +266,7 @@ export default function ChatPage() {
                   <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden">
                     {searchResults.map(user => (
                       <button key={user.id} onClick={() => { setActiveContact(user); setSearchQuery(''); setSearchResults([]); if(window.innerWidth < 640) setShowSidebar(false); }} className="w-full p-3 hover:bg-gray-700 flex items-center gap-3 border-b border-gray-700 last:border-0 text-left">
-                        <span className="w-8 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: user.color }} />
-                        <p className="text-sm font-semibold truncate flex-1">{user.username}</p>
-                        <UserPlus size={16} className="text-blue-400" />
+                        <span className="w-8 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: user.color }} /><p className="text-sm font-semibold truncate flex-1">{user.username}</p><UserPlus size={16} className="text-blue-400" />
                       </button>
                     ))}
                   </div>
@@ -278,8 +279,7 @@ export default function ChatPage() {
                   <p className="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1.5"><Inbox size={12}/> Requests</p>
                   {messageRequests.map(r => (
                     <button key={r.id} onClick={() => { setActiveContact(r); if(window.innerWidth < 640) setShowSidebar(false); }} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all mb-1 ${activeContact?.id === r.id ? 'bg-amber-500/20' : 'bg-amber-500/5 hover:bg-amber-500/10'}`}>
-                      <span className="w-10 h-10 rounded-full flex-shrink-0" style={{ backgroundColor: r.color }} />
-                      <div className="text-left flex-1 min-w-0"><p className="text-sm font-bold truncate text-amber-400">{r.username}</p></div>
+                      <span className="w-10 h-10 rounded-full flex-shrink-0" style={{ backgroundColor: r.color }} /><div className="text-left flex-1 min-w-0"><p className="text-sm font-bold truncate text-amber-400">{r.username}</p></div>
                     </button>
                   ))}
                 </div>
@@ -287,8 +287,7 @@ export default function ChatPage() {
               <p className="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2">Recent</p>
               {contacts.map(c => (
                 <button key={c.id} onClick={() => { setActiveContact(c); if(window.innerWidth < 640) setShowSidebar(false); }} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all mb-1 ${activeContact?.id === c.id ? 'bg-blue-600 shadow-lg shadow-blue-600/20' : 'hover:bg-gray-700/40'}`}>
-                   <span className="w-10 h-10 rounded-full flex-shrink-0" style={{ backgroundColor: c.color }} />
-                   <div className="text-left flex-1 min-w-0"><p className="text-sm font-semibold truncate">{c.username}</p></div>
+                   <span className="w-10 h-10 rounded-full flex-shrink-0" style={{ backgroundColor: c.color }} /><div className="text-left flex-1 min-w-0"><p className="text-sm font-semibold truncate">{c.username}</p></div>
                 </button>
               ))}
             </div>
@@ -300,7 +299,6 @@ export default function ChatPage() {
         </div>
       </aside>
 
-      {/* Main Chat Area */}
       <main className="flex-1 flex flex-col min-w-0 bg-gray-900">
         <header className="h-16 flex-shrink-0 border-b border-gray-700/50 bg-gray-800/20 flex items-center justify-between px-4 sm:px-6">
            <div className="flex items-center gap-3 overflow-hidden">
@@ -312,19 +310,17 @@ export default function ChatPage() {
                 </>
               )}
            </div>
-           
            <div className="flex items-center gap-2">
               {activeContact && (
                 <>
                   {showMsgSearch ? (
                     <div className="flex items-center bg-gray-800 rounded-lg px-2 border border-gray-700">
-                       <input autoFocus placeholder="Find in chat..." value={msgSearch} onChange={e => setMsgSearch(e.target.value)} className="bg-transparent border-none outline-none py-1.5 text-xs w-24 sm:w-40" />
+                       <input autoFocus placeholder="Search..." value={msgSearch} onChange={e => setMsgSearch(e.target.value)} className="bg-transparent border-none outline-none py-1.5 text-xs w-24 sm:w-40" />
                        <button onClick={() => { setMsgSearch(''); setShowMsgSearch(false); }} className="p-1 text-gray-500"><X size={14}/></button>
                     </div>
                   ) : <button onClick={() => setShowMsgSearch(true)} className="p-2 text-gray-500 hover:text-gray-300"><History size={18}/></button>}
-                  
                   <div className="relative">
-                    <button onClick={() => setActiveMenuId(activeMenuId === 'h' ? null : 'header')} className="p-2 text-gray-500 hover:text-gray-300"><MoreVertical size={20}/></button>
+                    <button onClick={() => setActiveMenuId(activeMenuId === 'header' ? null : 'header')} className="p-2 text-gray-500 hover:text-gray-300"><MoreVertical size={20}/></button>
                     {activeMenuId === 'header' && (
                       <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-40 overflow-hidden min-w-[140px]">
                          <button onClick={() => blockUser(activeContact)} className="w-full px-4 py-2.5 text-left text-xs hover:bg-rose-900/30 text-rose-400 flex items-center gap-2.5 font-bold"><ShieldAlert size={14}/> Block</button>
@@ -335,7 +331,6 @@ export default function ChatPage() {
               )}
            </div>
         </header>
-
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar" onClick={() => setActiveMenuId(null)}>
           {filteredMessages.map((msg, idx) => {
             const isMe = msg.sender_id === identity?.id;
@@ -351,7 +346,7 @@ export default function ChatPage() {
                   </div>
                   {isMe && (
                     <div className="absolute top-0 right-full mr-1 opacity-0 group-hover:opacity-100 transition-opacity flex">
-                      <button onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === msg.id ? null : msg.id); }} className="p-1 text-gray-500 hover:text-gray-300 rounded-lg hover:bg-gray-800 transition-colors"><MoreVertical size={16}/></button>
+                      <button onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === msg.id ? null : msg.id); }} className="p-1.5 text-gray-500 hover:text-gray-300 rounded-lg hover:bg-gray-800 transition-colors"><MoreVertical size={16}/></button>
                       {activeMenuId === msg.id && (
                         <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-40 py-1.5 overflow-hidden min-w-[120px]">
                           <button onClick={() => { setEditingId(msg.id); setInput(msg.content); setActiveMenuId(null); }} className="w-full px-4 py-2 text-left text-xs hover:bg-gray-700 flex items-center gap-2.5 font-medium"><Edit2 size={14}/> Edit</button>
@@ -366,21 +361,19 @@ export default function ChatPage() {
           })}
           <div ref={messagesEndRef} className="h-4" />
         </div>
-
         <div className="h-6 px-6 text-[10px] text-gray-500 italic font-medium">
-          {Object.keys(typingUsers).filter(u => u !== identity?.username).length > 0 && (
-            <span className="flex items-center gap-2"><span className="w-1 h-1 bg-blue-500 rounded-full animate-ping" /> Someone is typing...</span>
-          )}
+          {Object.keys(typingUsers).filter(u => u !== identity?.username).length > 0 && <span className="flex items-center gap-2"><span className="w-1 h-1 bg-blue-500 rounded-full animate-ping" /> Someone is typing...</span>}
         </div>
-
-        <footer className="p-3 sm:p-5 bg-gray-900/80 backdrop-blur-xl border-t border-gray-800 relative z-20">
-          {showEmoji && <div className="absolute bottom-full left-4 z-50 p-2 mb-2 bg-gray-800 rounded-2xl shadow-2xl border border-gray-700"><EmojiPicker theme="dark" onEmojiClick={(e) => setInput(prev => prev + e.emoji)} width={280} height={350}/></div>}
-          <form onSubmit={handleSend} className={`max-w-4xl mx-auto flex items-end gap-1 sm:gap-2 bg-gray-800 border border-gray-700/80 rounded-[2rem] p-1.5 transition-all shadow-2xl focus-within:border-blue-500/50 ${!activeContact ? 'opacity-30 pointer-events-none grayscale' : ''}`}>
-             <button type="button" onClick={() => setShowEmoji(!showEmoji)} className={`p-2.5 rounded-full transition-all ${showEmoji ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-blue-400 hover:bg-blue-400/5'}`}><Smile size={20}/></button>
-             <button type="button" onClick={() => fileInputRef.current.click()} disabled={uploading} className="p-2.5 text-gray-400 hover:text-blue-400 rounded-full transition-all"><ImageIcon size={20}/></button>
-             <input type="file" ref={fileInputRef} onChange={e => { /* upload logic */ }} accept="image/*" className="hidden" />
-             <input type="text" value={input} onChange={(e) => { setInput(e.target.value); if(activeContact) clientRef.current.sendTyping(identity.username, activeContact.id); }} placeholder={editingId ? "Correcting message..." : (activeContact ? `Message ${activeContact.username}...` : "Select a chat")} className="flex-1 bg-transparent px-2 py-3 outline-none text-gray-100 text-base placeholder:text-gray-500" />
-             <button type="submit" disabled={!input.trim()} className={`p-3 rounded-full transition-all flex-shrink-0 active:scale-90 shadow-xl ${editingId ? 'bg-amber-500 hover:bg-amber-400' : 'bg-blue-600 hover:bg-blue-500'}`}>{editingId ? <Check size={20} className="text-gray-900"/> : <Send size={20} className="text-white ml-0.5"/>}</button>
+        <footer className="p-2 sm:p-5 bg-gray-900/80 backdrop-blur-xl border-t border-gray-800 relative z-20">
+          {showEmoji && <div className="absolute bottom-full left-2 sm:left-4 z-50 p-2 mb-2 bg-gray-800 rounded-2xl shadow-2xl border border-gray-700"><EmojiPicker theme="dark" onEmojiClick={(e) => setInput(prev => prev + e.emoji)} width={280} height={350}/></div>}
+          <form onSubmit={handleSend} className={`max-w-4xl mx-auto flex items-center gap-1 sm:gap-2 bg-gray-800 border border-gray-700/80 rounded-full p-1 sm:p-1.5 transition-all shadow-2xl focus-within:border-blue-500/50 ${!activeContact ? 'opacity-30 pointer-events-none grayscale' : ''}`}>
+             <button type="button" onClick={() => setShowEmoji(!showEmoji)} className={`p-2 sm:p-2.5 rounded-full transition-all ${showEmoji ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-blue-400 hover:bg-blue-400/5'}`}><Smile size={20}/></button>
+             <button type="button" onClick={() => fileInputRef.current.click()} disabled={uploading} className="p-2 sm:p-2.5 text-gray-400 hover:text-blue-400 rounded-full transition-all"><ImageIcon size={20}/></button>
+             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="image/*" className="hidden" />
+             <input type="text" value={input} onChange={(e) => { setInput(e.target.value); if(activeContact) clientRef.current.sendTyping(identity.username, activeContact.id); }} placeholder={activeContact ? "Message..." : "Select chat"} className="flex-1 bg-transparent px-2 py-2 sm:py-3 outline-none text-gray-100 text-[16px] placeholder:text-gray-500" />
+             <button type="submit" disabled={!input.trim()} className={`p-3 rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg ${editingId ? 'bg-amber-500 hover:bg-amber-400' : 'bg-blue-600 hover:bg-blue-500 shadow-blue-600/20'}`}>
+                {editingId ? <Check size={18} className="text-gray-900"/> : <Send size={18} className="text-white translate-x-0.5"/>}
+             </button>
           </form>
         </footer>
       </main>
