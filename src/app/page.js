@@ -1,10 +1,45 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { Send, Wifi, WifiOff, LogOut, Search } from 'lucide-react';
+import { Send, Wifi, WifiOff, LogOut, Search, Image as ImageIcon, Paperclip, Loader2 } from 'lucide-react';
 import { ChatClient } from '@/lib/chat-client';
 import Auth from '@/components/Auth';
 import { supabase } from '@/lib/supabase';
+
+// Utility to parse text and find links/images
+const renderContent = (content) => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const parts = content.split(urlRegex);
+
+  return parts.map((part, i) => {
+    if (part.match(urlRegex)) {
+      const isImage = part.match(/\.(jpeg|jpg|gif|png|webp)$/i);
+      if (isImage) {
+        return (
+          <img 
+            key={i} 
+            src={part} 
+            alt="attachment" 
+            className="max-w-full rounded-lg mt-2 mb-2 shadow-sm border border-gray-700/50"
+            onLoad={() => window.scrollTo(0, document.body.scrollHeight)}
+          />
+        );
+      }
+      return (
+        <a 
+          key={i} 
+          href={part} 
+          target="_blank" 
+          rel="noopener noreferrer" 
+          className="text-blue-400 underline break-all hover:text-blue-300"
+        >
+          {part}
+        </a>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+};
 
 export default function ChatPage() {
   const [messages, setMessages] = useState([]);
@@ -16,9 +51,11 @@ export default function ChatPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [uploading, setUploading] = useState(false);
   
   const clientRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     // Check current session
@@ -94,6 +131,44 @@ export default function ChatPage() {
     setIsSearching(false);
   };
 
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Math.random()}.${fileExt}`;
+    const filePath = `chat/${fileName}`;
+
+    try {
+      const { data, error } = await supabase.storage
+        .from('chat-attachments')
+        .upload(filePath, file);
+
+      if (error) throw error;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('chat-attachments')
+        .getPublicUrl(filePath);
+
+      // Send the image URL as a message
+      const chatData = {
+        id: crypto.randomUUID(),
+        sender: identity.username,
+        color: identity.color,
+        content: publicUrl,
+        timestamp: Date.now()
+      };
+
+      clientRef.current.sendMessage(chatData);
+    } catch (error) {
+      console.error('Error uploading file:', error.message);
+      alert('Failed to upload image. Make sure the "chat-attachments" bucket exists and is public.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   if (authLoading) {
     return <div className="h-screen bg-gray-900 flex items-center justify-center text-gray-400">Loading...</div>;
   }
@@ -140,6 +215,7 @@ export default function ChatPage() {
             {identity?.username || 'User'}
           </p>
         </div>
+
         <div className="flex-1 max-w-md mx-8 relative hidden md:block">
           <div className="relative">
             <Search className="absolute left-3 top-2.5 text-gray-500" size={18} />
@@ -152,7 +228,6 @@ export default function ChatPage() {
             />
           </div>
           
-          {/* Search Results Dropdown */}
           {searchQuery.length >= 2 && (
             <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-50">
               {isSearching ? (
@@ -211,9 +286,10 @@ export default function ChatPage() {
                     : 'bg-gray-800 text-gray-100 rounded-bl-sm border border-gray-700/50'
                 } transition-all duration-200 hover:shadow-lg`}
               >
-                <p className="leading-relaxed whitespace-pre-wrap break-words">{msg.content}</p>
+                <div className="leading-relaxed whitespace-pre-wrap break-words">
+                  {renderContent(msg.content)}
+                </div>
                 
-                {/* Pending indicator for offline mode */}
                 {isMe && msg.status === 'pending' && (
                   <span className="absolute -bottom-5 right-1 text-[10px] text-gray-500 italic flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse" />
@@ -234,11 +310,27 @@ export default function ChatPage() {
           className="max-w-4xl mx-auto flex items-end gap-2 bg-gray-800 rounded-3xl p-1 border border-gray-700/50 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all"
         >
           <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            accept="image/*"
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current.click()}
+            disabled={uploading}
+            className="p-3 m-1 text-gray-400 hover:text-blue-400 transition-colors rounded-full"
+          >
+            {uploading ? <Loader2 className="animate-spin" size={20} /> : <ImageIcon size={20} />}
+          </button>
+          
+          <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={isOnline ? "Type a message..." : "Type offline... will send when reconnected"}
-            className="flex-1 bg-transparent px-4 py-3 outline-none text-gray-100 placeholder:text-gray-500"
+            className="flex-1 bg-transparent px-2 py-3 outline-none text-gray-100 placeholder:text-gray-500"
           />
           <button
             type="submit"
