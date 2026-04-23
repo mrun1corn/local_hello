@@ -92,7 +92,7 @@ export default function ChatPage() {
   };
 
   const loadConnections = async (userId) => {
-    const { data: conn, error } = await supabase.from('connections').select('*, sender:profiles!connections_sender_id_fkey(*), receiver:profiles!connections_receiver_id_fkey(*)').or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
+    const { data: conn } = await supabase.from('connections').select('*, sender:profiles!connections_sender_id_fkey(*), receiver:profiles!connections_receiver_id_fkey(*)').or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
     if (conn) {
       const accepted = conn.filter(c => c.status === 'accepted').map(c => c.sender_id === userId ? c.receiver : c.sender);
       const pending = conn.filter(c => c.status === 'pending' && c.receiver_id === userId).map(c => ({ ...c.sender, request_id: c.id }));
@@ -157,6 +157,14 @@ export default function ChatPage() {
     setActiveContact(request);
   };
 
+  const blockUser = async (user) => {
+    if (!confirm(`Block ${user.username}?`)) return;
+    clientRef.current?.blockUser(user.id);
+    setBlockedProfiles(prev => [...prev, user]);
+    setActiveContact(null); setActiveMenuId(null);
+    toast.error(`Blocked ${user.username}`);
+  };
+
   const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim() || !activeContact) return;
@@ -170,10 +178,10 @@ export default function ChatPage() {
 
     const chatData = { id: crypto.randomUUID(), sender: identity.username, sender_id: identity.id, receiver_id: activeContact.id, color: identity.color, content: input.trim(), timestamp: Date.now() };
     if (editingId) {
-      clientRef.current.editMessage(editingId, activeContact.id, input.trim());
+      clientRef.current?.editMessage(editingId, activeContact.id, input.trim());
       setMessages(prev => prev.map(m => m.id === editingId ? { ...m, content: input.trim(), edited: true } : m));
       setEditingId(null);
-    } else clientRef.current.sendMessage(chatData);
+    } else clientRef.current?.sendMessage(chatData);
     setInput(''); setShowEmoji(false);
   };
 
@@ -213,7 +221,7 @@ export default function ChatPage() {
                 </div>
                 <div className="space-y-2">
                    <p className="text-[10px] font-bold text-gray-500 uppercase">Blocked</p>
-                   {blockedProfiles.map(p => <div key={p.id} className="text-sm p-2 bg-rose-500/5 border border-rose-500/10 rounded-lg flex justify-between">{p.username} <button onClick={() => unblockUser(p.id)} className="text-rose-400 text-xs">Unblock</button></div>)}
+                   {blockedProfiles.map(p => <div key={p.id} className="text-sm p-2 bg-rose-500/5 border border-rose-500/10 rounded-lg flex justify-between">{p.username}</div>)}
                 </div>
              </div>
           </div>
@@ -263,7 +271,7 @@ export default function ChatPage() {
 
       <main className="flex-1 flex flex-col min-w-0 bg-gray-900 shadow-2xl">
         <header className="h-16 flex-shrink-0 border-b border-gray-700/50 bg-gray-800/20 flex items-center justify-between px-4 sm:px-6">
-           <div className="flex items-center gap-3 overflow-hidden">
+           <div className="flex items-center gap-3 overflow-hidden text-left">
               <button onClick={() => setShowSidebar(true)} className="sm:hidden text-gray-400 p-2 hover:bg-gray-700 rounded-lg relative">
                 <MessageSquare size={22}/>
                 {messageRequests.length > 0 && <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-gray-900" />}
@@ -298,7 +306,7 @@ export default function ChatPage() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar" onClick={() => setActiveMenuId(null)}>
           {filteredMessages.map((msg, idx) => {
             const isMe = msg.sender_id === identity?.id;
             return (
@@ -328,7 +336,7 @@ export default function ChatPage() {
              <button type="submit" disabled={!input.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
           </form>
         </footer>
-      </aside>
+      </main>
     </div>
   );
 }
