@@ -11,20 +11,16 @@ export async function GET(request) {
 
   try {
     let query = supabase.from('messages').select('*');
-    
     if (contactId) {
-      // Fetch private conversation
       query = query.or(`and(sender_id.eq.${userId},receiver_id.eq.${contactId}),and(sender_id.eq.${contactId},receiver_id.eq.${userId})`);
     } else {
-      // Fetch all messages involving the user (for notification/sync)
       query = query.or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
     }
 
     const { data, error } = await query.order('timestamp', { ascending: true }).limit(100);
     if (error) throw error;
-    return NextResponse.json({ data });
+    return NextResponse.json({ data: data || [] });
   } catch (error) {
-    console.error('Supabase fetch error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -32,12 +28,16 @@ export async function GET(request) {
 export async function POST(request) {
   try {
     const body = await request.json();
+    if (!body.content || !body.sender_id) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+
     const msg = {
       id: body.id || crypto.randomUUID(),
-      sender: body.sender,
+      sender: body.sender || 'User',
       sender_id: body.sender_id,
-      receiver_id: body.receiver_id,
-      color: body.color,
+      receiver_id: body.receiver_id || null,
+      color: body.color || '#3b82f6',
       content: body.content,
       timestamp: body.timestamp || Date.now(),
       is_read: false
@@ -47,6 +47,24 @@ export async function POST(request) {
     if (error) throw error;
 
     return NextResponse.json({ success: true, data: msg });
+  } catch (error) {
+    console.error('API POST Error:', error.message);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function PATCH(request) {
+  try {
+    const body = await request.json();
+    if (!body.id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
+
+    const { error } = await supabase
+      .from('messages')
+      .update({ is_read: body.is_read ?? true })
+      .eq('id', body.id);
+
+    if (error) throw error;
+    return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

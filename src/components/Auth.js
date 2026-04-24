@@ -31,7 +31,7 @@ export default function Auth({ onAuthComplete }) {
           .from('profiles')
           .select('username')
           .ilike('username', username)
-          .single();
+          .maybeSingle();
 
         if (existingUser) {
           throw new Error('This username is already taken. Please choose another one.');
