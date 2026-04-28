@@ -113,25 +113,45 @@ export default function ChatPage() {
     const unsub = onSnapshot(q, async (snapshot) => {
       const conn = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
-      // We need to fetch profiles for these connections from local API
-      // (Optimization: In a real app, you'd move profiles to Firestore too)
-      const res = await fetch(`/api/connections?userId=${identity.id}`);
-      const { data } = await res.json();
+      const enriched = await Promise.all(conn.map(async c => {
+        const otherId = c.sender_id === identity.id ? c.receiver_id : c.sender_id;
+        try {
+          const res = await fetch(`/api/profiles/me?id=${otherId}`);
+          const { data } = await res.json();
+          if (!data) return null;
+          return {
+            ...c,
+            senderProfile: c.sender_id === identity.id ? identity : data,
+            receiverProfile: c.receiver_id === identity.id ? identity : data
+          };
+        } catch(e) { return null; }
+      }));
+
+      const valid = enriched.filter(Boolean);
+      const accepted = valid.filter(c => c.status === 'accepted').map(c => c.sender_id === identity.id ? c.receiverProfile : c.senderProfile).filter(Boolean);
+      const pending = valid.filter(c => c.status === 'pending' && c.receiver_id === identity.id).map(c => ({ ...c.senderProfile, request_id: c.id })).filter(Boolean);
       
-      if (data) {
-        const accepted = data.filter(c => c.status === 'accepted').map(c => c.sender_id === identity.id ? c.receiverProfile : c.senderProfile).filter(Boolean);
-        const pending = data.filter(c => c.status === 'pending' && c.receiver_id === identity.id).map(c => ({ ...c.senderProfile, request_id: c.id })).filter(Boolean);
-        setContacts(accepted);
-        setMessageRequests(pending);
-      }
+      setContacts(accepted);
+      setMessageRequests(pending);
+    }, (error) => {
+      console.error("Connections listener error:", error);
+      toast.error(`Connections Error: ${error.message}`);
     });
 
     // Listen to blocks
     const bq = query(collection(db_fs, "blocks"), where("blocker_id", "==", identity.id));
-    const unsubBlocks = onSnapshot(bq, async () => {
-       const res = await fetch(`/api/blocks?userId=${identity.id}`);
-       const { data } = await res.json();
-       if (data) setBlockedProfiles(data.map(b => b.blocked).filter(Boolean));
+    const unsubBlocks = onSnapshot(bq, async (snapshot) => {
+       const blocks = snapshot.docs.map(doc => doc.data());
+       const enriched = await Promise.all(blocks.map(async b => {
+         try {
+           const res = await fetch(`/api/profiles/me?id=${b.blocked_id}`);
+           const { data } = await res.json();
+           return data;
+         } catch(e) { return null; }
+       }));
+       setBlockedProfiles(enriched.filter(Boolean));
+    }, (error) => {
+      console.error("Blocks listener error:", error);
     });
 
     return () => { unsub(); unsubBlocks(); };
@@ -164,6 +184,9 @@ export default function ChatPage() {
       });
       
       setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
+    }, (error) => {
+      console.error("Messages listener error:", error);
+      toast.error(`Messages Error: ${error.message}`);
     });
 
     return () => unsub();
