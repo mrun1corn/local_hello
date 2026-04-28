@@ -46,3 +46,5 @@ next-env.d.ts
 # Local Data and Uploads
 /data
 /public/uploads
+
+cred.txt

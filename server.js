@@ -4,7 +4,11 @@ const next = require('next');
 const Bonjour = require('bonjour-service');
 const Database = require('better-sqlite3');
 const fs = require('fs');
-require('dotenv').config({ path: '.env.local' });
+if (fs.existsSync('.env')) {
+  require('dotenv').config({ path: '.env' });
+} else {
+  require('dotenv').config({ path: '.env.local' });
+}
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = '0.0.0.0';

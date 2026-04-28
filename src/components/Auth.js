@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Mail, Lock, User, Loader2 } from 'lucide-react';
 import { auth } from '@/lib/firebase';
+import toast, { Toaster } from 'react-hot-toast';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -71,30 +72,59 @@ export default function Auth({ onAuthComplete }) {
     }
   };
 
+  const handleCheckVerification = async () => {
+    if (auth.currentUser) {
+      await auth.currentUser.reload();
+      if (auth.currentUser.emailVerified) {
+        await syncProfile(auth.currentUser);
+        onAuthComplete(auth.currentUser);
+      } else {
+        toast.error("Email still not verified. Please check your inbox.");
+      }
+    }
+  };
+
+  const handleResendEmail = async () => {
+    if (auth.currentUser) {
+      try {
+        await sendEmailVerification(auth.currentUser);
+        toast.success("Verification email resent!");
+      } catch (err) {
+        setError(err.message);
+      }
+    }
+  };
+
   if (needsVerification) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-900 p-4 text-center">
+        <Toaster />
         <div className="w-full max-w-md bg-gray-800 rounded-3xl p-8 border border-gray-700 shadow-2xl space-y-6">
           <div className="w-16 h-16 bg-blue-500/10 rounded-full flex items-center justify-center mx-auto text-blue-400">
             <Mail size={32} />
           </div>
           <h2 className="text-2xl font-bold text-white">Verify your email</h2>
-          <p className="text-gray-400">
-            We've sent a verification link to <span className="text-blue-400 font-medium">{email}</span>. 
-            Please check your inbox and click the link to continue.
+          <p className="text-gray-400 text-sm">
+            We&apos;ve sent a verification link to <span className="text-blue-400 font-medium">{email}</span>. 
           </p>
           <div className="pt-4 space-y-3">
             <button 
-              onClick={() => window.location.reload()}
+              onClick={handleCheckVerification}
               className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all"
             >
-              I've Verified
+              I&apos;ve Verified
+            </button>
+            <button 
+              onClick={handleResendEmail}
+              className="w-full bg-transparent border border-gray-700 text-gray-400 hover:text-white py-2 text-sm rounded-xl transition-all"
+            >
+              Resend Email
             </button>
             <button 
               onClick={() => { setNeedsVerification(false); setIsLogin(true); signOut(auth); }}
-              className="w-full bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium py-3 rounded-xl transition-all"
+              className="w-full text-gray-500 hover:text-rose-400 text-xs py-2 transition-all"
             >
-              Back to Login
+              Cancel and Back to Login
             </button>
           </div>
         </div>
