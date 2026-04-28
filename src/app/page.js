@@ -16,8 +16,8 @@ import {
   where, 
   orderBy, 
   onSnapshot, 
-  updateDoc, 
   doc, 
+  getDoc,
   limit, 
   setDoc,
   getDocs,
@@ -77,13 +77,12 @@ export default function ChatPage() {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         try {
-          // Check if they have a local profile (username setup)
-          const res = await fetch(`/api/profiles/me?id=${user.uid}`);
-          const { data } = await res.json();
+          // Check if they have a Firestore profile (username setup)
+          const docSnap = await getDoc(doc(db_fs, "users", user.uid));
           
-          if (data) {
+          if (docSnap.exists()) {
             setSession({ user });
-            setIdentity(data);
+            setIdentity(docSnap.data());
           } else {
             // Profile doesn't exist, they need to set up a username in <Auth>
             setSession(null);
@@ -128,9 +127,9 @@ export default function ChatPage() {
       const enriched = await Promise.all(conn.map(async c => {
         const otherId = c.sender_id === identity.id ? c.receiver_id : c.sender_id;
         try {
-          const res = await fetch(`/api/profiles/me?id=${otherId}`);
-          const { data } = await res.json();
-          if (!data) return null;
+          const docSnap = await getDoc(doc(db_fs, "users", otherId));
+          if (!docSnap.exists()) return null;
+          const data = docSnap.data();
           return {
             ...c,
             senderProfile: c.sender_id === identity.id ? identity : data,
@@ -156,9 +155,8 @@ export default function ChatPage() {
        const blocks = snapshot.docs.map(doc => doc.data());
        const enriched = await Promise.all(blocks.map(async b => {
          try {
-           const res = await fetch(`/api/profiles/me?id=${b.blocked_id}`);
-           const { data } = await res.json();
-           return data;
+           const docSnap = await getDoc(doc(db_fs, "users", b.blocked_id));
+           return docSnap.exists() ? docSnap.data() : null;
          } catch(e) { return null; }
        }));
        setBlockedProfiles(enriched.filter(Boolean));
@@ -313,9 +311,15 @@ export default function ChatPage() {
     if (query.length < 2) { setSearchResults([]); return; }
     setIsSearching(true);
     try {
-      const res = await fetch(`/api/profiles?query=${encodeURIComponent(query)}&excludeId=${identity.id}`);
-      const { data } = await res.json();
-      setSearchResults(data || []);
+      // Native Firestore prefix search
+      const sq = query(
+        collection(db_fs, "users"),
+        where("username", ">=", query),
+        where("username", "<=", query + '\uf8ff')
+      );
+      const snapshot = await getDocs(sq);
+      const data = snapshot.docs.map(doc => doc.data()).filter(u => u.id !== identity.id);
+      setSearchResults(data);
     } catch (e) {
       setSearchResults([]);
     }

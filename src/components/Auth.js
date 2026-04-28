@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { User, Loader2 } from 'lucide-react';
-import { auth } from '@/lib/firebase';
+import { auth, db_fs } from '@/lib/firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import toast, { Toaster } from 'react-hot-toast';
 import { 
   GoogleAuthProvider,
@@ -18,15 +19,13 @@ export default function Auth({ onAuthComplete }) {
   const [setupUser, setSetupUser] = useState(null); // Set when a new user needs to pick a username
 
   const syncProfile = async (firebaseUser, displayName) => {
-    // Sync Firebase user to local SQLite profiles table
-    await fetch('/api/profiles/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: firebaseUser.uid,
-        email: firebaseUser.email,
-        username: displayName || firebaseUser.displayName || firebaseUser.email.split('@')[0],
-      })
+    const color = '#' + Math.floor(Math.random() * 16777215).toString(16);
+    await setDoc(doc(db_fs, "users", firebaseUser.uid), {
+      id: firebaseUser.uid,
+      email: firebaseUser.email,
+      username: displayName || firebaseUser.displayName || firebaseUser.email.split('@')[0],
+      color,
+      created_at: Date.now()
     });
   };
 
@@ -37,12 +36,11 @@ export default function Auth({ onAuthComplete }) {
       const userCredential = await signInWithPopup(auth, provider);
       const user = userCredential.user;
 
-      // Check if they have a local profile
-      const res = await fetch(`/api/profiles/me?id=${user.uid}`);
-      const { data } = await res.json();
+      // Check if they have a profile in Firestore
+      const docSnap = await getDoc(doc(db_fs, "users", user.uid));
 
       // If they don't have a local profile, ask for a username
-      if (!data) {
+      if (!docSnap.exists()) {
         setSetupUser(user);
       } else {
         // Returning user
