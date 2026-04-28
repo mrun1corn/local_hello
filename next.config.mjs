@@ -17,10 +17,12 @@ const localIPs = getLocalIPs();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  allowedDevOrigins: localIPs,
-  serverActions: {
-    allowedOrigins: ['localhost:3000', ...localIPs.map(ip => `${ip}:3000`)],
+  // output: 'export', // Commented out to restore API routes for full feature testing
+  images: {
+    unoptimized: true,
   },
+  allowedDevOrigins: localIPs,
+  // Note: serverActions config varies by Next.js version
 };
 
 export default nextConfig;

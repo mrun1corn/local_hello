@@ -8,6 +8,7 @@ import CreateGroupModal from '@/components/CreateGroupModal';
 import EmojiPicker from 'emoji-picker-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { auth, db_fs } from '@/lib/firebase';
+import { ChatClient } from '@/lib/chat-client';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
   collection, 
@@ -68,10 +69,34 @@ export default function ChatPage() {
   const [uploading, setUploading] = useState(false);
   const [typingUsers, setTypingUsers] = useState({});
   const [showEmoji, setShowEmoji] = useState(false);
+  const [isLocalOnline, setIsLocalOnline] = useState(false);
   
   const activeContactRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const chatClientRef = useRef(null);
+
+  // Initialize ChatClient for Local WebSocket support
+  useEffect(() => {
+    if (identity?.id) {
+      chatClientRef.current = new ChatClient(
+        identity.id,
+        (msg) => {
+          // Handle incoming message from local websocket
+          setMessages(prev => {
+            // Deduplicate: check if message ID already exists (from firestore or previous local)
+            if (prev.find(p => p.id === msg.id)) return prev;
+            const newMsgs = [...prev, msg].sort((a, b) => a.timestamp - b.timestamp);
+            return newMsgs;
+          });
+        },
+        (status) => setIsLocalOnline(status)
+      );
+    }
+    return () => {
+      if (chatClientRef.current?.ws) chatClientRef.current.ws.close();
+    };
+  }, [identity?.id]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -260,7 +285,9 @@ export default function ChatPage() {
        });
     }
 
-    await addDoc(collection(db_fs, "messages"), {
+    const msgId = Date.now().toString();
+    const messageData = {
+      id: msgId,
       sender: identity.username,
       sender_id: identity.id,
       receiver_id: activeContact.id,
@@ -268,7 +295,15 @@ export default function ChatPage() {
       content: input.trim(),
       timestamp: Date.now(),
       is_read: false
-    });
+    };
+
+    // Send via Local WebSocket
+    if (chatClientRef.current) {
+      chatClientRef.current.sendMessage(messageData);
+    }
+
+    // Send via Cloud Firestore
+    await addDoc(collection(db_fs, "messages"), messageData);
 
     setInput(''); setShowEmoji(false);
   };
@@ -289,12 +324,14 @@ export default function ChatPage() {
 
       const data = await res.json();
       if (data.url) {
+        // Use the same origin for the upload URL to ensure it points to the correct server
+        const baseUrl = window.location.origin;
         await addDoc(collection(db_fs, "messages"), {
           sender: identity.username,
           sender_id: identity.id,
           receiver_id: activeContact.id,
           color: identity.color,
-          content: `${window.location.origin}${data.url}`,
+          content: `${baseUrl}${data.url}`,
           timestamp: Date.now(),
           is_read: false
         });

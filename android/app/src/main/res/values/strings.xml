@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LocalChat</string>
+    <string name="title_activity_main">LocalChat</string>
+    <string name="package_name">com.localchat.app</string>
+    <string name="custom_url_scheme">com.localchat.app</string>
+</resources>
