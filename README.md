@@ -55,8 +55,9 @@ A hybrid, self-hosted chat application built with Next.js, Firebase, and SQLite.
 To run the application in the background on your server:
 
 1.  **Build the application**:
+    We use a specialized build script for production that safely limits memory usage (to prevent VPS crashes) and ensures a clean build environment:
     ```bash
-    npm run build
+    npm run build:prod
     ```
 
 2.  **Start with PM2**:
