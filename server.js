@@ -1,27 +1,10 @@
 const { createServer } = require('http');
 const { parse } = require('url');
 const next = require('next');
-const { WebSocketServer } = require('ws');
 const Bonjour = require('bonjour-service');
 const Database = require('better-sqlite3');
-const crypto = require('crypto');
 const fs = require('fs');
 require('dotenv').config({ path: '.env.local' });
-const { createClient } = require('@supabase/supabase-js');
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''
-);
-
-process.on('uncaughtException', (err) => {
-  if (err.code === 'WS_ERR_INVALID_CLOSE_CODE' || err.message.includes('Invalid WebSocket frame')) {
-    console.error('WS Frame Error Suppressed');
-  } else {
-    console.error('Uncaught Exception:', err);
-    process.exit(1);
-  }
-});
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = '0.0.0.0';
@@ -32,7 +15,17 @@ const handle = app.getRequestHandler();
 if (!fs.existsSync('./data')) fs.mkdirSync('./data');
 
 const db = new Database('./data/chat.db');
+db.pragma('journal_mode = WAL');
+
 db.exec(`
+  CREATE TABLE IF NOT EXISTS profiles (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    color TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     sender TEXT NOT NULL,
@@ -57,57 +50,9 @@ db.exec(`
   );
 `);
 
-const insertMsg = db.prepare('INSERT INTO messages (id, sender, sender_id, receiver_id, color, content, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)');
-const markRead = db.prepare('UPDATE messages SET is_read = 1 WHERE id = ?');
-const addBlock = db.prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id) VALUES (?, ?)');
-const checkBlocked = db.prepare('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?');
-const getHistory = db.prepare('SELECT * FROM messages WHERE sender_id = ? OR receiver_id = ? ORDER BY timestamp ASC LIMIT 100');
-
 app.prepare().then(() => {
   const server = createServer((req, res) => {
     try { handle(req, res, parse(req.url, true)); } catch (err) { res.statusCode = 500; res.end(); }
-  });
-
-  const wss = new WebSocketServer({ server });
-  wss.on('connection', (ws) => {
-    ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        
-        if (msg.type === 'auth') { 
-          ws.user_id = msg.data.id; 
-          // Send history for this user
-          const history = getHistory.all(ws.user_id, ws.user_id);
-          ws.send(JSON.stringify({ type: 'history', data: history }));
-          return; 
-        }
-
-        if (msg.type === 'chat') {
-          if (checkBlocked.get(msg.data.receiver_id, ws.user_id)) return;
-          const chatData = { ...msg.data, timestamp: Date.now() };
-          try {
-            insertMsg.run(chatData.id, chatData.sender, ws.user_id, chatData.receiver_id, chatData.color, chatData.content, chatData.timestamp);
-            supabase.from('messages').insert([chatData]).then(() => {});
-            wss.clients.forEach(c => {
-              if (c.readyState === 1 && (c.user_id === chatData.receiver_id || c.user_id === ws.user_id)) {
-                if (c !== ws) c.send(JSON.stringify({ type: 'chat', data: chatData }));
-              }
-            });
-            ws.send(JSON.stringify({ type: 'ack', id: chatData.id }));
-          } catch (e) { console.error('DB Error:', e); }
-        } else if (msg.type === 'read') {
-          markRead.run(msg.data.id);
-          supabase.from('messages').update({ is_read: true }).eq('id', msg.data.id).then(() => {});
-          wss.clients.forEach(c => { if (c.readyState === 1 && c.user_id === msg.data.receiver_id) c.send(JSON.stringify(msg)); });
-        } else if (msg.type === 'block') {
-          addBlock.run(ws.user_id, msg.data.blocked_id);
-          supabase.from('blocked_users').insert([{ blocker_id: ws.user_id, blocked_id: msg.data.blocked_id }]).then(() => {});
-        } else {
-          // Forward typing/edit/delete events
-          wss.clients.forEach(c => { if (c.readyState === 1 && c.user_id === msg.data.receiver_id) c.send(JSON.stringify(msg)); });
-        }
-      } catch (e) { console.error('WS Message Error:', e); }
-    });
   });
 
   try {

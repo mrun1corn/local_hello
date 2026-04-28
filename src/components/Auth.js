@@ -1,8 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { supabase } from '@/lib/supabase';
 import { Mail, Lock, User, Loader2 } from 'lucide-react';
+import { auth } from '@/lib/firebase';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  sendEmailVerification,
+  updateProfile,
+  signOut
+} from 'firebase/auth';
 
 export default function Auth({ onAuthComplete }) {
   const [isLogin, setIsLogin] = useState(true);
@@ -11,6 +18,20 @@ export default function Auth({ onAuthComplete }) {
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [error, setError] = useState(null);
+  const [needsVerification, setNeedsVerification] = useState(false);
+
+  const syncProfile = async (firebaseUser, displayName) => {
+    // Sync Firebase user to local SQLite profiles table
+    await fetch('/api/profiles/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: firebaseUser.uid,
+        email: firebaseUser.email,
+        username: displayName || firebaseUser.displayName || firebaseUser.email.split('@')[0],
+      })
+    });
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -19,44 +40,67 @@ export default function Auth({ onAuthComplete }) {
 
     try {
       if (isLogin) {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
-        onAuthComplete(data.user);
-      } else {
-        // 1. Check if username is taken first
-        const { data: existingUser } = await supabase
-          .from('profiles')
-          .select('username')
-          .ilike('username', username)
-          .maybeSingle();
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
 
-        if (existingUser) {
-          throw new Error('This username is already taken. Please choose another one.');
+        if (!user.emailVerified) {
+          setNeedsVerification(true);
+          setLoading(false);
+          return;
         }
 
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              username: username,
-              color: '#' + Math.floor(Math.random()*16777215).toString(16),
-            }
-          }
-        });
-        if (error) throw error;
-        alert('Check your email for the confirmation link!');
-        setIsLogin(true);
+        await syncProfile(user);
+        onAuthComplete(user);
+      } else {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+
+        await updateProfile(user, { displayName: username });
+        await sendEmailVerification(user);
+        
+        // We sync early so they exist in DB even before verification
+        await syncProfile(user, username);
+        
+        setNeedsVerification(true);
       }
     } catch (err) {
+      console.error(err);
       setError(err.message);
     } finally {
       setLoading(false);
     }
   };
+
+  if (needsVerification) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-900 p-4 text-center">
+        <div className="w-full max-w-md bg-gray-800 rounded-3xl p-8 border border-gray-700 shadow-2xl space-y-6">
+          <div className="w-16 h-16 bg-blue-500/10 rounded-full flex items-center justify-center mx-auto text-blue-400">
+            <Mail size={32} />
+          </div>
+          <h2 className="text-2xl font-bold text-white">Verify your email</h2>
+          <p className="text-gray-400">
+            We've sent a verification link to <span className="text-blue-400 font-medium">{email}</span>. 
+            Please check your inbox and click the link to continue.
+          </p>
+          <div className="pt-4 space-y-3">
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all"
+            >
+              I've Verified
+            </button>
+            <button 
+              onClick={() => { setNeedsVerification(false); setIsLogin(true); signOut(auth); }}
+              className="w-full bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium py-3 rounded-xl transition-all"
+            >
+              Back to Login
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900 p-4">

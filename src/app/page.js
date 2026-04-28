@@ -1,12 +1,28 @@
+/* eslint-disable */
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { Send, Wifi, WifiOff, LogOut, Search, Image as ImageIcon, Loader2, MoreVertical, Edit2, Trash2, Smile, X, UserPlus, Check, MessageSquare, Users, Inbox, ShieldAlert, CheckCheck, Settings, Bell, BellOff, History } from 'lucide-react';
-import { ChatClient } from '@/lib/chat-client';
 import Auth from '@/components/Auth';
-import { supabase } from '@/lib/supabase';
 import EmojiPicker from 'emoji-picker-react';
 import toast, { Toaster } from 'react-hot-toast';
+import { auth, db_fs } from '@/lib/firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { 
+  collection, 
+  addDoc, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot, 
+  updateDoc, 
+  doc, 
+  limit, 
+  setDoc,
+  getDocs,
+  or,
+  and
+} from 'firebase/firestore';
 
 const renderContent = (content, highlight = '') => {
   if (!content) return null;
@@ -29,7 +45,6 @@ const renderContent = (content, highlight = '') => {
 export default function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [isOnline, setIsOnline] = useState(false);
   const [identity, setIdentity] = useState(null);
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -40,7 +55,6 @@ export default function ChatPage() {
   const [activeContact, setActiveContact] = useState(null);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -48,113 +62,120 @@ export default function ChatPage() {
   const [msgSearch, setMsgSearch] = useState('');
   const [showMsgSearch, setShowMsgSearch] = useState(false);
   
-  const [editingProfile, setEditingProfile] = useState(false);
-  const [newUsername, setNewUsername] = useState('');
-  
   const [uploading, setUploading] = useState(false);
-  const [editingId, setEditingId] = useState(null);
   const [typingUsers, setTypingUsers] = useState({});
   const [showEmoji, setShowEmoji] = useState(false);
-  const [activeMenuId, setActiveMenuId] = useState(null);
   
-  const clientRef = useRef(null);
   const activeContactRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) {
-        setIdentity({ id: session.user.id, username: session.user.user_metadata.username, color: session.user.user_metadata.color });
-        setNewUsername(session.user.user_metadata.username);
-        loadConnections(session.user.id);
-        loadBlockedList(session.user.id);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user && user.emailVerified) {
+        setSession({ user });
+        fetchProfile(user.uid, user.displayName || user.email.split('@')[0]);
+      } else {
+        setSession(null);
+        setIdentity(null);
       }
       setAuthLoading(false);
     });
-    if ("Notification" in window) setNotificationsEnabled(Notification.permission === "granted");
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) {
-        const id = { id: session.user.id, username: session.user.user_metadata.username, color: session.user.user_metadata.color };
-        setIdentity(id); loadConnections(session.user.id); loadBlockedList(session.user.id);
-      } else {
-        setIdentity(null); setContacts([]); setMessageRequests([]);
-      }
-    });
-    return () => subscription.unsubscribe();
+    return () => unsubscribe();
   }, []);
 
-  const loadBlockedList = async (userId) => {
-    const { data } = await supabase.from('blocked_users').select('blocked_id, blocked:profiles!blocked(*)').eq('blocker_id', userId);
-    if (data) setBlockedProfiles(data.map(b => b.blocked).filter(Boolean));
-  };
-
-  const loadConnections = async (userId) => {
-    const { data: conn } = await supabase.from('connections').select('*, senderProfile:profiles!sender(*), receiverProfile:profiles!receiver(*)').or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
-    if (conn) {
-      const accepted = conn.filter(c => c.status === 'accepted').map(c => c.sender_id === userId ? c.receiverProfile : c.senderProfile).filter(Boolean);
-      const pending = conn.filter(c => c.status === 'pending' && c.receiver_id === userId).map(c => ({ ...c.senderProfile, request_id: c.id })).filter(Boolean);
-      setContacts(accepted);
-      setMessageRequests(pending);
-    }
-  };
-
-  const handleNewMessage = useCallback((msg) => {
-    if (msg.type === 'typing') {
-      if (msg.receiver_id === identity?.id) setTypingUsers(prev => ({ ...prev, [msg.sender]: Date.now() }));
-      return;
-    }
-    if (msg.type === 'read') {
-      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, is_read: true } : m));
-      return;
-    }
-    if (msg.type === 'edit') setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, content: msg.content, edited: true } : m));
-    else if (msg.type === 'delete') setMessages(prev => prev.filter(m => m.id !== msg.id));
-    else if (msg.type === 'chat' || !msg.type) {
-      const contact = activeContactRef.current;
-      const isFromActive = contact && (msg.sender_id === contact.id || msg.receiver_id === contact.id);
-      if (isFromActive) {
-        setMessages((prev) => {
-          if (prev.find(m => m.id === msg.id)) return prev.map(m => m.id === msg.id ? { ...m, ...msg, status: 'sent' } : m);
-          return [...prev, msg].sort((a, b) => a.timestamp - b.timestamp);
-        });
-        if (msg.sender_id !== identity?.id) clientRef.current?.markRead(msg.id, msg.sender_id);
-      } else if (msg.receiver_id === identity?.id) {
-        loadConnections(identity.id);
-        toast(`New message from ${msg.sender}`, { icon: '💬' });
+  const fetchProfile = async (uid, username) => {
+    try {
+      await fetch(`/api/profiles/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: uid, email: auth.currentUser.email, username })
+      });
+      
+      const profileRes = await fetch(`/api/profiles?query=${encodeURIComponent(username)}&excludeId=none`);
+      const { data } = await profileRes.json();
+      const me = data.find(p => p.id === uid);
+      if (me) {
+        setIdentity(me);
+        // We'll move connections to Firestore snapshot too
       }
+    } catch (e) {
+      console.error(e);
     }
-    setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
+  };
+
+  // Real-time connections and blocked list via Firestore (using local sync for basic info)
+  useEffect(() => {
+    if (!identity) return;
+
+    // Listen to connections
+    const q = query(
+      collection(db_fs, "connections"),
+      or(where("sender_id", "==", identity.id), where("receiver_id", "==", identity.id))
+    );
+
+    const unsub = onSnapshot(q, async (snapshot) => {
+      const conn = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      // We need to fetch profiles for these connections from local API
+      // (Optimization: In a real app, you'd move profiles to Firestore too)
+      const res = await fetch(`/api/connections?userId=${identity.id}`);
+      const { data } = await res.json();
+      
+      if (data) {
+        const accepted = data.filter(c => c.status === 'accepted').map(c => c.sender_id === identity.id ? c.receiverProfile : c.senderProfile).filter(Boolean);
+        const pending = data.filter(c => c.status === 'pending' && c.receiver_id === identity.id).map(c => ({ ...c.senderProfile, request_id: c.id })).filter(Boolean);
+        setContacts(accepted);
+        setMessageRequests(pending);
+      }
+    });
+
+    // Listen to blocks
+    const bq = query(collection(db_fs, "blocks"), where("blocker_id", "==", identity.id));
+    const unsubBlocks = onSnapshot(bq, async () => {
+       const res = await fetch(`/api/blocks?userId=${identity.id}`);
+       const { data } = await res.json();
+       if (data) setBlockedProfiles(data.map(b => b.blocked).filter(Boolean));
+    });
+
+    return () => { unsub(); unsubBlocks(); };
   }, [identity]);
 
-  useEffect(() => {
-    if (!session || !identity) return;
-    if (!clientRef.current) clientRef.current = new ChatClient(identity.id, handleNewMessage, setIsOnline);
-    return () => {
-      if (clientRef.current?.ws) { clientRef.current.ws.close(); clientRef.current = null; }
-    };
-  }, [session, identity, handleNewMessage]);
-
+  // Real-time messages for active contact
   useEffect(() => {
     activeContactRef.current = activeContact;
-    if (activeContact && identity) {
+    if (!activeContact || !identity) {
       setMessages([]);
-      supabase.from('messages').select('*').or(`and(sender_id.eq.${identity.id},receiver_id.eq.${activeContact.id}),and(sender_id.eq.${activeContact.id},receiver_id.eq.${identity.id})`).order('timestamp', { ascending: true })
-        .then(({ data }) => { 
-          if (data) {
-            setMessages(data);
-            data.filter(m => m.sender_id !== identity.id && !m.is_read).forEach(m => clientRef.current?.markRead(m.id, m.sender_id));
-          }
-        });
+      return;
     }
+
+    const q = query(
+      collection(db_fs, "messages"),
+      or(
+        and(where("sender_id", "==", identity.id), where("receiver_id", "==", activeContact.id)),
+        and(where("sender_id", "==", activeContact.id), where("receiver_id", "==", identity.id))
+      ),
+      orderBy("timestamp", "asc")
+    );
+
+    const unsub = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setMessages(msgs);
+      
+      // Mark as read
+      msgs.filter(m => m.sender_id !== identity.id && !m.is_read).forEach(m => {
+        updateDoc(doc(db_fs, "messages", m.id), { is_read: true });
+      });
+      
+      setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
+    });
+
+    return () => unsub();
   }, [activeContact, identity]);
 
   const blockUser = async (user) => {
     if (!confirm(`Block ${user.username}?`)) return;
-    clientRef.current?.blockUser(user.id);
-    setBlockedProfiles(prev => [...prev, user]);
+    await addDoc(collection(db_fs, "blocks"), { blocker_id: identity.id, blocked_id: user.id });
     setActiveContact(null);
     toast.error(`Blocked ${user.username}`);
   };
@@ -162,27 +183,76 @@ export default function ChatPage() {
   const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim() || !activeContact) return;
+
     const isFriend = contacts.find(c => c.id === activeContact.id);
     const isReq = messageRequests.find(r => r.id === activeContact.id);
+    
     if (!isFriend && !isReq) {
-       await supabase.from('connections').insert([{ sender_id: identity.id, receiver_id: activeContact.id, status: 'pending' }]);
-       loadConnections(identity.id);
+       await addDoc(collection(db_fs, "connections"), {
+         sender_id: identity.id,
+         receiver_id: activeContact.id,
+         status: 'pending',
+         created_at: Date.now()
+       });
     }
-    const chatData = { id: crypto.randomUUID(), sender: identity.username, sender_id: identity.id, receiver_id: activeContact.id, color: identity.color, content: input.trim(), timestamp: Date.now() };
-    if (editingId) {
-      clientRef.current?.editMessage(editingId, activeContact.id, input.trim());
-      setMessages(prev => prev.map(m => m.id === editingId ? { ...m, content: input.trim(), edited: true } : m));
-      setEditingId(null);
-    } else clientRef.current?.sendMessage(chatData);
+
+    await addDoc(collection(db_fs, "messages"), {
+      sender: identity.username,
+      sender_id: identity.id,
+      receiver_id: activeContact.id,
+      color: identity.color,
+      content: input.trim(),
+      timestamp: Date.now(),
+      is_read: false
+    });
+
     setInput(''); setShowEmoji(false);
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !activeContact) return;
+    setUploading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (data.url) {
+        await addDoc(collection(db_fs, "messages"), {
+          sender: identity.username,
+          sender_id: identity.id,
+          receiver_id: activeContact.id,
+          color: identity.color,
+          content: `${window.location.origin}${data.url}`,
+          timestamp: Date.now(),
+          is_read: false
+        });
+      }
+    } catch (e) {
+      toast.error("Failed to upload image");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleSearch = async (query) => {
     setSearchQuery(query);
     if (query.length < 2) { setSearchResults([]); return; }
     setIsSearching(true);
-    const { data } = await supabase.from('profiles').select('*').or(`username.ilike.%${query}%,email.ilike.%${query}%`).neq('id', identity.id).limit(5);
-    setSearchResults(data || []);
+    try {
+      const res = await fetch(`/api/profiles?query=${encodeURIComponent(query)}&excludeId=${identity.id}`);
+      const { data } = await res.json();
+      setSearchResults(data || []);
+    } catch (e) {
+      setSearchResults([]);
+    }
     setIsSearching(false);
   };
 
@@ -209,12 +279,13 @@ export default function ChatPage() {
              <div className="space-y-4">
                 <div className="bg-gray-900/50 p-4 rounded-xl border border-gray-700/50">
                    <p className="text-[10px] font-bold text-gray-500 mb-2 uppercase">Profile</p>
-                   <div className="text-sm font-medium">{identity.username}</div>
+                   <div className="text-sm font-medium">{identity?.username}</div>
                 </div>
                 <div className="space-y-2">
                    <p className="text-[10px] font-bold text-gray-500 uppercase">Blocked</p>
                    {blockedProfiles.map(p => <div key={p.id} className="text-sm p-2 bg-rose-500/5 border border-rose-500/10 rounded-lg flex justify-between">{p.username}</div>)}
                 </div>
+                <button onClick={() => signOut(auth)} className="w-full flex items-center justify-center gap-2 p-3 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-xl transition-all font-bold text-sm"><LogOut size={16}/> Sign Out</button>
              </div>
           </div>
         ) : (
@@ -259,8 +330,15 @@ export default function ChatPage() {
           </>
         )}
         <div className="p-4 border-t border-gray-700/50 flex items-center justify-between">
-           <div className="flex items-center gap-2 truncate"><span className="w-8 h-8 rounded-full border border-gray-700" style={{ backgroundColor: identity?.color }} /><span className="text-sm font-bold truncate">{identity?.username}</span></div>
-           <button onClick={() => supabase.auth.signOut()} className="p-2 text-gray-400 hover:text-rose-400 transition-all"><LogOut size={18}/></button>
+           <div className="flex items-center gap-2 truncate">
+             {identity && (
+               <>
+                 <span className="w-8 h-8 rounded-full border border-gray-700 flex-shrink-0" style={{ backgroundColor: identity.color }} />
+                 <span className="text-sm font-bold truncate">{identity.username}</span>
+               </>
+             )}
+           </div>
+           <button onClick={() => signOut(auth)} className="p-2 text-gray-400 hover:text-rose-400 transition-all"><LogOut size={18}/></button>
         </div>
       </aside>
 
@@ -290,7 +368,7 @@ export default function ChatPage() {
                   <button onClick={() => blockUser(activeContact)} className="p-2 text-gray-500 hover:text-rose-400"><ShieldAlert size={18}/></button>
                 </>
               )}
-              <div className={`p-2 rounded-full ${isOnline ? 'text-emerald-400' : 'text-rose-400'}`}><Wifi size={16} /></div>
+              <div className={`p-2 rounded-full text-emerald-400`}><Wifi size={16} /></div>
            </div>
         </header>
 
@@ -299,12 +377,12 @@ export default function ChatPage() {
             <p className="text-xs text-amber-400 font-bold">New Message Request</p>
             <button onClick={() => {
               const req = messageRequests.find(r => r.id === activeContact.id);
-              supabase.from('connections').update({ status: 'accepted' }).eq('id', req.request_id).then(() => loadConnections(identity.id));
+              updateDoc(doc(db_fs, "connections", req.request_id), { status: 'accepted' });
             }} className="bg-amber-500 text-gray-900 text-[10px] font-bold py-1 px-4 rounded-full uppercase tracking-tighter">Accept</button>
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar" onClick={() => setActiveMenuId(null)}>
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar">
           {filteredMessages.map((msg, idx) => {
             const isMe = msg.sender_id === identity?.id;
             return (
@@ -325,8 +403,10 @@ export default function ChatPage() {
 
         <footer className="p-2 sm:p-5 bg-gray-900/80 backdrop-blur-xl border-t border-gray-800">
           <form onSubmit={handleSend} className={`max-w-4xl mx-auto flex items-center gap-1 sm:gap-2 bg-gray-800 border border-gray-700/80 rounded-full p-1 sm:p-1.5 transition-all shadow-2xl focus-within:border-blue-500/50 ${!activeContact ? 'opacity-30 pointer-events-none grayscale' : ''}`}>
+             <button type="button" onClick={() => fileInputRef.current?.click()} className="p-2.5 text-gray-400 hover:text-blue-400 transition-all rounded-full">{uploading ? <Loader2 className="animate-spin" size={20}/> : <ImageIcon size={20}/>}</button>
+             <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept="image/*" />
              <button type="button" onClick={() => setShowEmoji(!showEmoji)} className={`p-2.5 rounded-full transition-all ${showEmoji ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-blue-400'}`}><Smile size={20}/></button>
-             <input type="text" value={input} onChange={(e) => { setInput(e.target.value); if(activeContact) clientRef.current?.sendTyping(identity.username, activeContact.id); }} placeholder={activeContact ? `Message ${activeContact.username}...` : "Select chat"} className="flex-1 bg-transparent px-2 py-2 sm:py-3 outline-none text-gray-100 text-[16px] placeholder:text-gray-500" />
+             <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder={activeContact ? `Message ${activeContact.username}...` : "Select chat"} className="flex-1 bg-transparent px-2 py-2 sm:py-3 outline-none text-gray-100 text-[16px] placeholder:text-gray-500" />
              <button type="submit" disabled={!input.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
           </form>
         </footer>
