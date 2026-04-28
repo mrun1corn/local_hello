@@ -71,10 +71,26 @@ export default function ChatPage() {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user && user.emailVerified) {
-        setSession({ user });
-        fetchProfile(user.uid, user.displayName || user.email.split('@')[0]);
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        try {
+          // Check if they have a local profile (username setup)
+          const res = await fetch(`/api/profiles/me?id=${user.uid}`);
+          const { data } = await res.json();
+          
+          if (data) {
+            setSession({ user });
+            setIdentity(data);
+          } else {
+            // Profile doesn't exist, they need to set up a username in <Auth>
+            setSession(null);
+            setIdentity(null);
+          }
+        } catch (e) {
+          console.error('Error fetching profile:', e);
+          setSession(null);
+          setIdentity(null);
+        }
       } else {
         setSession(null);
         setIdentity(null);
@@ -83,26 +99,6 @@ export default function ChatPage() {
     });
     return () => unsubscribe();
   }, []);
-
-  const fetchProfile = async (uid, username) => {
-    try {
-      await fetch(`/api/profiles/sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: uid, email: auth.currentUser.email, username })
-      });
-      
-      const profileRes = await fetch(`/api/profiles?query=${encodeURIComponent(username)}&excludeId=none`);
-      const { data } = await profileRes.json();
-      const me = data.find(p => p.id === uid);
-      if (me) {
-        setIdentity(me);
-        // We'll move connections to Firestore snapshot too
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
 
   // Real-time connections and blocked list via Firestore (using local sync for basic info)
   useEffect(() => {
