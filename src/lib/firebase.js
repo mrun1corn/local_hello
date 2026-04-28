@@ -1,7 +1,7 @@
 import { initializeApp, getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore, enableMultiTabIndexedDbPersistence } from "firebase/firestore";
-
+import { getStorage } from "firebase/storage";
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -11,12 +11,21 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID
 };
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const auth = getAuth(app);
-const db_fs = getFirestore(app);
+// Guard initialization: don't crash the build if keys are missing
+let app;
+if (firebaseConfig.apiKey && typeof window !== "undefined") {
+  app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+} else {
+  // Mock app for build-time/SSR where keys might be missing
+  app = getApps().length > 0 ? getApps()[0] : null;
+}
+
+const auth = app ? getAuth(app) : null;
+const db_fs = app ? getFirestore(app) : null;
+const storage = app ? getStorage(app) : null;
 
 // Enable offline caching and multi-tab sync
-if (typeof window !== "undefined") {
+if (app && db_fs && typeof window !== "undefined") {
   enableMultiTabIndexedDbPersistence(db_fs).catch((err) => {
     if (err.code === 'failed-precondition') {
       console.warn('Multiple tabs open, persistence can only be enabled in one tab at a time.');
@@ -26,4 +35,4 @@ if (typeof window !== "undefined") {
   });
 }
 
-export { auth, db_fs };
+export { auth, db_fs, storage };

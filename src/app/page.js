@@ -99,6 +99,7 @@ export default function ChatPage() {
   }, [identity?.id]);
 
   useEffect(() => {
+    if (!auth) return; // Exit if Firebase is not initialized (e.g. during build)
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         try {
