@@ -4,6 +4,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { Send, Wifi, WifiOff, LogOut, Search, Image as ImageIcon, Loader2, MoreVertical, Edit2, Trash2, Smile, X, UserPlus, Check, MessageSquare, Users, Inbox, ShieldAlert, CheckCheck, Settings, Bell, BellOff, History } from 'lucide-react';
 import Auth from '@/components/Auth';
+import CreateGroupModal from '@/components/CreateGroupModal';
 import EmojiPicker from 'emoji-picker-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { auth, db_fs } from '@/lib/firebase';
@@ -55,6 +56,8 @@ export default function ChatPage() {
   const [activeContact, setActiveContact] = useState(null);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [groups, setGroups] = useState([]);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
   
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -98,6 +101,15 @@ export default function ChatPage() {
       setAuthLoading(false);
     });
     return () => unsubscribe();
+  }, []);
+
+  // Request Notification Permissions
+  useEffect(() => {
+    if (typeof window !== 'undefined' && "Notification" in window) {
+      if (Notification.permission === "default") {
+        Notification.requestPermission();
+      }
+    }
   }, []);
 
   // Real-time connections and blocked list via Firestore (using local sync for basic info)
@@ -154,7 +166,14 @@ export default function ChatPage() {
       console.error("Blocks listener error:", error);
     });
 
-    return () => { unsub(); unsubBlocks(); };
+    // Listen to groups
+    const gq = query(collection(db_fs, "groups"), where("members", "array-contains", identity.id));
+    const unsubGroups = onSnapshot(gq, (snapshot) => {
+       const grps = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+       setGroups(grps);
+    });
+
+    return () => { unsub(); unsubBlocks(); unsubGroups(); };
   }, [identity]);
 
   // Real-time messages for active contact
@@ -165,18 +184,45 @@ export default function ChatPage() {
       return;
     }
 
-    const q = query(
-      collection(db_fs, "messages"),
-      or(
-        and(where("sender_id", "==", identity.id), where("receiver_id", "==", activeContact.id)),
-        and(where("sender_id", "==", activeContact.id), where("receiver_id", "==", identity.id))
-      ),
-      orderBy("timestamp", "asc")
-    );
+    let q;
+    if (activeContact.isGroup) {
+      q = query(
+        collection(db_fs, "messages"),
+        where("receiver_id", "==", activeContact.id),
+        orderBy("timestamp", "asc")
+      );
+    } else {
+      q = query(
+        collection(db_fs, "messages"),
+        or(
+          and(where("sender_id", "==", identity.id), where("receiver_id", "==", activeContact.id)),
+          and(where("sender_id", "==", activeContact.id), where("receiver_id", "==", identity.id))
+        ),
+        orderBy("timestamp", "asc")
+      );
+    }
 
     const unsub = onSnapshot(q, (snapshot) => {
       const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMessages(msgs);
+      
+      // Handle notifications
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === "added") {
+          const m = change.doc.data();
+          if (m.sender_id !== identity.id && m.timestamp > Date.now() - 5000) {
+            // Beep sound
+            try {
+               const audio = new Audio("data:audio/mp3;base64,//NExAAAAANIAAAAAExBTUUzLjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq");
+               audio.play().catch(()=>{});
+            } catch(e){}
+            
+            if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+              new Notification(`New message from ${m.sender}`, { body: m.content });
+            }
+          }
+        }
+      });
       
       // Mark as read
       msgs.filter(m => m.sender_id !== identity.id && !m.is_read).forEach(m => {
@@ -205,8 +251,9 @@ export default function ChatPage() {
 
     const isFriend = contacts.find(c => c.id === activeContact.id);
     const isReq = messageRequests.find(r => r.id === activeContact.id);
+    const isGroup = activeContact.isGroup;
     
-    if (!isFriend && !isReq) {
+    if (!isFriend && !isReq && !isGroup) {
        await addDoc(collection(db_fs, "connections"), {
          sender_id: identity.id,
          receiver_id: activeContact.id,
@@ -283,10 +330,12 @@ export default function ChatPage() {
   return (
     <div className="flex h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 overflow-hidden text-left">
       <Toaster />
+      <CreateGroupModal isOpen={showCreateGroup} onClose={() => setShowCreateGroup(false)} contacts={contacts} identity={identity} />
       <aside className={`${showSidebar ? 'w-full sm:w-80' : 'w-0'} bg-gray-800/40 border-r border-gray-700/50 flex flex-col transition-all overflow-hidden z-30`}>
         <div className="p-5 border-b border-gray-700/50 flex items-center justify-between">
            <h2 className="font-bold flex items-center gap-2 text-lg text-blue-400"><MessageSquare size={20}/> Chats</h2>
            <div className="flex gap-1">
+             <button onClick={() => setShowCreateGroup(true)} className="p-2 hover:bg-gray-700 rounded-lg text-gray-400" title="Create Group"><Users size={18}/></button>
              <button onClick={() => setShowSettings(!showSettings)} className="p-2 hover:bg-gray-700 rounded-lg text-gray-400"><Settings size={18}/></button>
              <button onClick={() => setShowSidebar(false)} className="sm:hidden p-2 text-gray-400"><X size={20}/></button>
            </div>
@@ -339,6 +388,17 @@ export default function ChatPage() {
                   ))}
                 </div>
               )}
+              {groups.length > 0 && (
+                <div className="mb-4">
+                  <p className="px-3 text-[10px] font-bold text-emerald-500 uppercase tracking-widest mb-2 flex items-center gap-1.5"><Users size={12}/> Groups</p>
+                  {groups.map(g => (
+                    <button key={g.id} onClick={() => { setActiveContact(g); if(window.innerWidth < 640) setShowSidebar(false); }} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all mb-1 ${activeContact?.id === g.id ? 'bg-emerald-600 shadow-lg' : 'hover:bg-gray-700/40'}`}>
+                       <span className="w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-white text-lg" style={{ backgroundColor: g.color }}>{g.name[0]?.toUpperCase()}</span>
+                       <div className="text-left flex-1 min-w-0 font-semibold">{g.name}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
               <p className="px-3 text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2">Connected</p>
               {contacts.map(c => (
                 <button key={c.id} onClick={() => { setActiveContact(c); if(window.innerWidth < 640) setShowSidebar(false); }} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all mb-1 ${activeContact?.id === c.id ? 'bg-blue-600 shadow-lg' : 'hover:bg-gray-700/40'}`}>
@@ -370,8 +430,13 @@ export default function ChatPage() {
               </button>
               {activeContact && (
                 <>
-                  <span className="w-9 h-9 rounded-full border border-gray-700 flex-shrink-0" style={{ backgroundColor: activeContact.color }} />
-                  <div className="min-w-0 text-left"><h3 className="font-bold text-sm sm:text-base truncate">{activeContact.username}</h3><div className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium">online</div></div>
+                  <span className="w-9 h-9 rounded-full border border-gray-700 flex-shrink-0 flex items-center justify-center font-bold text-white" style={{ backgroundColor: activeContact.color }}>
+                    {activeContact.isGroup ? activeContact.name[0]?.toUpperCase() : ''}
+                  </span>
+                  <div className="min-w-0 text-left">
+                    <h3 className="font-bold text-sm sm:text-base truncate">{activeContact.isGroup ? activeContact.name : activeContact.username}</h3>
+                    <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium">online</div>
+                  </div>
                 </>
               )}
            </div>
@@ -420,7 +485,7 @@ export default function ChatPage() {
           <div ref={messagesEndRef} className="h-4" />
         </div>
 
-        <footer className="p-2 sm:p-5 bg-gray-900/80 backdrop-blur-xl border-t border-gray-800">
+        <footer className="p-2 sm:p-5 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:pb-5 bg-gray-900/80 backdrop-blur-xl border-t border-gray-800">
           <form onSubmit={handleSend} className={`max-w-4xl mx-auto flex items-center gap-1 sm:gap-2 bg-gray-800 border border-gray-700/80 rounded-full p-1 sm:p-1.5 transition-all shadow-2xl focus-within:border-blue-500/50 ${!activeContact ? 'opacity-30 pointer-events-none grayscale' : ''}`}>
              <button type="button" onClick={() => fileInputRef.current?.click()} className="p-2.5 text-gray-400 hover:text-blue-400 transition-all rounded-full">{uploading ? <Loader2 className="animate-spin" size={20}/> : <ImageIcon size={20}/>}</button>
              <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept="image/*" />
