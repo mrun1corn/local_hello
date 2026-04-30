@@ -1,4 +1,4 @@
-import db from '@/lib/db';
+import db from '../../lib/db.js';
 
 export async function GET(req) {
   const { searchParams } = new URL(req.url);

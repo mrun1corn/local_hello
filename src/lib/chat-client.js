@@ -94,9 +94,20 @@ export class ChatClient {
       if (res.ok) {
         const json = await res.json();
         if (json.data) json.data.forEach(m => this.onMessage(m));
-        if (!this.isOnline) { this.isOnline = true; this.onStatusChange(true); this.syncQueue(); }
+        if (!this.isOnline) { 
+          this.isOnline = true; 
+          this.onStatusChange(true); 
+          this.syncQueue(); 
+        }
+      } else {
+        throw new Error('Fetch failed');
       }
-    } catch (e) { this.isOnline = false; this.onStatusChange(false); }
+    } catch (e) { 
+      if (this.isOnline) {
+        this.isOnline = false; 
+        this.onStatusChange(false); 
+      }
+    }
   }
 
   sendMessage(data) {

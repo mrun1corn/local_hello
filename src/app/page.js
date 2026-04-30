@@ -65,6 +65,8 @@ export default function ChatPage() {
   const [isSearching, setIsSearching] = useState(false);
   const [msgSearch, setMsgSearch] = useState('');
   const [showMsgSearch, setShowMsgSearch] = useState(false);
+  const [editingMsgId, setEditingMsgId] = useState(null);
+  const [editInput, setEditInput] = useState('');
   
   const [uploading, setUploading] = useState(false);
   const [typingUsers, setTypingUsers] = useState({});
@@ -83,12 +85,27 @@ export default function ChatPage() {
         identity.id,
         (msg) => {
           // Handle incoming message from local websocket
-          setMessages(prev => {
-            // Deduplicate: check if message ID already exists (from firestore or previous local)
-            if (prev.find(p => p.id === msg.id)) return prev;
-            const newMsgs = [...prev, msg].sort((a, b) => a.timestamp - b.timestamp);
-            return newMsgs;
-          });
+          if (msg.type === 'edit') {
+             setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, content: msg.content } : m));
+             return;
+          }
+          if (msg.type === 'delete') {
+             setMessages(prev => prev.filter(m => m.id === msg.id));
+             return;
+          }
+
+          if (msg.sender_id === activeContactRef.current?.id || msg.receiver_id === activeContactRef.current?.id) {
+            setMessages(prev => {
+              if (prev.find(p => p.id === msg.id)) return prev;
+              const newMsgs = [...prev, msg].sort((a, b) => a.timestamp - b.timestamp);
+              return newMsgs;
+            });
+          }
+          
+          // Optionally handle notifications for other contacts
+          if (msg.sender_id !== identity.id && msg.sender_id !== activeContactRef.current?.id) {
+            toast(`New message from ${msg.sender}`, { icon: '💬' });
+          }
         },
         (status) => setIsLocalOnline(status)
       );
@@ -228,7 +245,16 @@ export default function ChatPage() {
 
     const unsub = onSnapshot(q, (snapshot) => {
       const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setMessages(msgs);
+      
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        msgs.forEach(m => {
+          if (!newMsgs.find(p => p.id === m.id)) {
+            newMsgs.push(m);
+          }
+        });
+        return newMsgs.sort((a, b) => a.timestamp - b.timestamp);
+      });
       
       // Handle notifications
       snapshot.docChanges().forEach((change) => {
@@ -251,6 +277,9 @@ export default function ChatPage() {
       // Mark as read
       msgs.filter(m => m.sender_id !== identity.id && !m.is_read).forEach(m => {
         updateDoc(doc(db_fs, "messages", m.id), { is_read: true });
+        if (chatClientRef.current) {
+          chatClientRef.current.markRead(m.id, m.sender_id);
+        }
       });
       
       setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
@@ -261,6 +290,47 @@ export default function ChatPage() {
 
     return () => unsub();
   }, [activeContact, identity]);
+
+  const handleDelete = async (msgId) => {
+    if (!confirm("Delete this message?")) return;
+    try {
+        // Delete locally
+        if (chatClientRef.current) {
+            chatClientRef.current.deleteMessage(msgId, activeContact.id);
+        }
+        // Delete from UI
+        setMessages(prev => prev.filter(m => m.id !== msgId));
+        // Delete from Firestore (if exists there)
+        const q = query(collection(db_fs, "messages"), where("id", "==", msgId));
+        const snap = await getDocs(q);
+        snap.forEach(async (d) => {
+            await deleteDoc(doc(db_fs, "messages", d.id));
+        });
+    } catch (e) {
+        toast.error("Failed to delete message");
+    }
+  };
+
+  const handleEdit = async (msgId, newContent) => {
+    if (!newContent.trim()) return;
+    try {
+        // Edit locally
+        if (chatClientRef.current) {
+            chatClientRef.current.editMessage(msgId, activeContact.id, newContent);
+        }
+        // Edit in UI
+        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: newContent } : m));
+        // Edit in Firestore
+        const q = query(collection(db_fs, "messages"), where("id", "==", msgId));
+        const snap = await getDocs(q);
+        snap.forEach(async (d) => {
+            await updateDoc(doc(db_fs, "messages", d.id), { content: newContent });
+        });
+        setEditingMsgId(null);
+    } catch (e) {
+        toast.error("Failed to edit message");
+    }
+  };
 
   const blockUser = async (user) => {
     if (!confirm(`Block ${user.username}?`)) return;
@@ -349,11 +419,12 @@ export default function ChatPage() {
     if (query.length < 2) { setSearchResults([]); return; }
     setIsSearching(true);
     try {
-      // Native Firestore prefix search
+      const lowerQuery = query.toLowerCase();
+      // Native Firestore prefix search on lowercase field
       const sq = query(
         collection(db_fs, "users"),
-        where("username", ">=", query),
-        where("username", "<=", query + '\uf8ff')
+        where("search_name", ">=", lowerQuery),
+        where("search_name", "<=", lowerQuery + '\uf8ff')
       );
       const snapshot = await getDocs(sq);
       const data = snapshot.docs.map(doc => doc.data()).filter(u => u.id !== identity.id);
@@ -515,11 +586,34 @@ export default function ChatPage() {
               <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
                 <div className="relative group max-w-[85%] sm:max-w-[70%] text-left">
                   <div className={`px-4 py-2.5 rounded-2xl ${isMe ? 'bg-blue-600 text-white rounded-br-sm' : 'bg-gray-800 text-gray-100 rounded-bl-sm border border-gray-700/50'} shadow-xl`}>
-                    <div className="leading-relaxed whitespace-pre-wrap break-words text-sm sm:text-base">{renderContent(msg.content, msgSearch)}</div>
-                    <div className="mt-1 flex items-center justify-end gap-1 opacity-40 text-[9px] font-bold">
-                      {isMe && (msg.is_read ? <CheckCheck size={12} className="text-emerald-300"/> : <Check size={12}/>)}
-                    </div>
+                    {editingMsgId === msg.id ? (
+                      <div className="flex flex-col gap-2 min-w-[200px]">
+                        <textarea 
+                          autoFocus
+                          value={editInput} 
+                          onChange={e => setEditInput(e.target.value)}
+                          className="bg-gray-900/50 border border-white/20 rounded-lg p-2 text-sm outline-none focus:border-white/40"
+                        />
+                        <div className="flex justify-end gap-2">
+                           <button onClick={() => setEditingMsgId(null)} className="text-[10px] uppercase font-bold opacity-60 hover:opacity-100">Cancel</button>
+                           <button onClick={() => handleEdit(msg.id, editInput)} className="text-[10px] uppercase font-bold text-emerald-400">Save</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="leading-relaxed whitespace-pre-wrap break-words text-sm sm:text-base">{renderContent(msg.content, msgSearch)}</div>
+                        <div className="mt-1 flex items-center justify-end gap-1 opacity-40 text-[9px] font-bold">
+                          {isMe && (msg.is_read ? <CheckCheck size={12} className="text-emerald-300"/> : <Check size={12}/>)}
+                        </div>
+                      </>
+                    )}
                   </div>
+                  {isMe && !editingMsgId && (
+                    <div className="absolute -left-14 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all bg-gray-900/50 rounded-lg p-1">
+                      <button onClick={() => { setEditingMsgId(msg.id); setEditInput(msg.content); }} className="p-1 text-gray-500 hover:text-blue-400"><Edit2 size={14}/></button>
+                      <button onClick={() => handleDelete(msg.id)} className="p-1 text-gray-600 hover:text-rose-400"><Trash2 size={14}/></button>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -534,6 +628,36 @@ export default function ChatPage() {
              <button type="button" onClick={() => setShowEmoji(!showEmoji)} className={`p-2.5 rounded-full transition-all ${showEmoji ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-blue-400'}`}><Smile size={20}/></button>
              <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder={activeContact ? `Message ${activeContact.username}...` : "Select chat"} className="flex-1 bg-transparent px-2 py-2 sm:py-3 outline-none text-gray-100 text-[16px] placeholder:text-gray-500" />
              <button type="submit" disabled={!input.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
+          </form>
+        </footer>
+      </main>
+    </div>
+  );
+}bled={!input.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
+          </form>
+        </footer>
+      </main>
+    </div>
+  );
+}dow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
+          </form>
+        </footer>
+      </main>
+    </div>
+  );
+}t-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
+          </form>
+        </footer>
+      </main>
+    </div>
+  );
+}bled={!input.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
+          </form>
+        </footer>
+      </main>
+    </div>
+  );
+}dow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
           </form>
         </footer>
       </main>

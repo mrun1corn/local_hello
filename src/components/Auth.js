@@ -20,10 +20,12 @@ export default function Auth({ onAuthComplete }) {
 
   const syncProfile = async (firebaseUser, displayName) => {
     const color = '#' + Math.floor(Math.random() * 16777215).toString(16);
+    const finalName = displayName || firebaseUser.displayName || firebaseUser.email.split('@')[0];
     await setDoc(doc(db_fs, "users", firebaseUser.uid), {
       id: firebaseUser.uid,
       email: firebaseUser.email,
-      username: displayName || firebaseUser.displayName || firebaseUser.email.split('@')[0],
+      username: finalName,
+      search_name: finalName.toLowerCase(),
       color,
       created_at: Date.now()
     });
