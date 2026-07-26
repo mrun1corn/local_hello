@@ -7,24 +7,9 @@ import Auth from '@/components/Auth';
 import CreateGroupModal from '@/components/CreateGroupModal';
 import EmojiPicker from 'emoji-picker-react';
 import toast, { Toaster } from 'react-hot-toast';
-import { auth, db_fs } from '@/lib/firebase';
+import { auth } from '@/lib/firebase';
 import { ChatClient } from '@/lib/chat-client';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { 
-  collection, 
-  addDoc, 
-  query, 
-  where, 
-  orderBy, 
-  onSnapshot, 
-  doc, 
-  getDoc,
-  limit, 
-  setDoc,
-  getDocs,
-  or,
-  and
-} from 'firebase/firestore';
 
 const renderContent = (content, highlight = '') => {
   if (!content) return null;
@@ -49,6 +34,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [identity, setIdentity] = useState(null);
   const [session, setSession] = useState(null);
+  const [token, setToken] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   
   const [contacts, setContacts] = useState([]);
@@ -80,9 +66,10 @@ export default function ChatPage() {
 
   // Initialize ChatClient for Local WebSocket support
   useEffect(() => {
-    if (identity?.id) {
+    if (identity?.id && token) {
       chatClientRef.current = new ChatClient(
         identity.id,
+        token,
         (msg) => {
           // Handle incoming message from local websocket
           if (msg.type === 'edit') {
@@ -113,32 +100,33 @@ export default function ChatPage() {
     return () => {
       if (chatClientRef.current?.ws) chatClientRef.current.ws.close();
     };
-  }, [identity?.id]);
+  }, [identity?.id, token]);
 
   useEffect(() => {
-    if (!auth) return; // Exit if Firebase is not initialized (e.g. during build)
+    if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
+        setSession({ user });
         try {
-          // Check if they have a Firestore profile (username setup)
-          const docSnap = await getDoc(doc(db_fs, "users", user.uid));
-          
-          if (docSnap.exists()) {
-            setSession({ user });
-            setIdentity(docSnap.data());
+          const t = await user.getIdToken();
+          setToken(t);
+          const res = await fetch(`/api/profiles?id=${user.uid}`, {
+            headers: { 'Authorization': `Bearer ${t}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setIdentity(data);
           } else {
-            // Profile doesn't exist, they need to set up a username in <Auth>
-            setSession(null);
             setIdentity(null);
           }
         } catch (e) {
           console.error('Error fetching profile:', e);
-          setSession(null);
           setIdentity(null);
         }
       } else {
         setSession(null);
         setIdentity(null);
+        setToken(null);
       }
       setAuthLoading(false);
     });
@@ -154,189 +142,112 @@ export default function ChatPage() {
     }
   }, []);
 
-  // Real-time connections and blocked list via Firestore (using local sync for basic info)
+  // Real-time connections and blocked list via Local API
   useEffect(() => {
-    if (!identity) return;
+    if (!identity || !token) return;
 
-    // Listen to connections
-    const q = query(
-      collection(db_fs, "connections"),
-      or(where("sender_id", "==", identity.id), where("receiver_id", "==", identity.id))
-    );
+    const fetchData = async () => {
+      try {
+        // Fetch connections
+        const connRes = await fetch(`/api/connections?userId=${identity.id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (connRes.ok) {
+          const { data } = await connRes.json();
+          const accepted = data.filter(c => c.status === 'accepted').map(c => c.sender_id === identity.id ? c.receiverProfile : c.senderProfile).filter(Boolean);
+          const pending = data.filter(c => c.status === 'pending' && c.receiver_id === identity.id).map(c => ({ ...c.senderProfile, request_id: c.id })).filter(Boolean);
+          setContacts(accepted);
+          setMessageRequests(pending);
+        }
 
-    const unsub = onSnapshot(q, async (snapshot) => {
-      const conn = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
-      const enriched = await Promise.all(conn.map(async c => {
-        const otherId = c.sender_id === identity.id ? c.receiver_id : c.sender_id;
-        try {
-          const docSnap = await getDoc(doc(db_fs, "users", otherId));
-          if (!docSnap.exists()) return null;
-          const data = docSnap.data();
-          return {
-            ...c,
-            senderProfile: c.sender_id === identity.id ? identity : data,
-            receiverProfile: c.receiver_id === identity.id ? identity : data
-          };
-        } catch(e) { return null; }
-      }));
+        // Fetch blocks
+        const blocksRes = await fetch(`/api/blocks?userId=${identity.id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (blocksRes.ok) {
+          const { data } = await blocksRes.json();
+          setBlockedProfiles(data.map(b => b.blocked).filter(Boolean));
+        }
 
-      const valid = enriched.filter(Boolean);
-      const accepted = valid.filter(c => c.status === 'accepted').map(c => c.sender_id === identity.id ? c.receiverProfile : c.senderProfile).filter(Boolean);
-      const pending = valid.filter(c => c.status === 'pending' && c.receiver_id === identity.id).map(c => ({ ...c.senderProfile, request_id: c.id })).filter(Boolean);
-      
-      setContacts(accepted);
-      setMessageRequests(pending);
-    }, (error) => {
-      console.error("Connections listener error:", error);
-      toast.error(`Connections Error: ${error.message}`);
-    });
+        // Fetch groups
+        const groupsRes = await fetch(`/api/groups?userId=${identity.id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (groupsRes.ok) {
+          const { data } = await groupsRes.json();
+          setGroups(data);
+        }
+      } catch (e) {
+        console.error("Fetch data error:", e);
+      }
+    };
 
-    // Listen to blocks
-    const bq = query(collection(db_fs, "blocks"), where("blocker_id", "==", identity.id));
-    const unsubBlocks = onSnapshot(bq, async (snapshot) => {
-       const blocks = snapshot.docs.map(doc => doc.data());
-       const enriched = await Promise.all(blocks.map(async b => {
-         try {
-           const docSnap = await getDoc(doc(db_fs, "users", b.blocked_id));
-           return docSnap.exists() ? docSnap.data() : null;
-         } catch(e) { return null; }
-       }));
-       setBlockedProfiles(enriched.filter(Boolean));
-    }, (error) => {
-      console.error("Blocks listener error:", error);
-    });
-
-    // Listen to groups
-    const gq = query(collection(db_fs, "groups"), where("members", "array-contains", identity.id));
-    const unsubGroups = onSnapshot(gq, (snapshot) => {
-       const grps = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-       setGroups(grps);
-    });
-
-    return () => { unsub(); unsubBlocks(); unsubGroups(); };
-  }, [identity]);
+    fetchData();
+    const interval = setInterval(fetchData, 10000); // Poll every 10s for new requests/connections
+    return () => clearInterval(interval);
+  }, [identity, token]);
 
   // Real-time messages for active contact
   useEffect(() => {
     activeContactRef.current = activeContact;
-    if (!activeContact || !identity) {
+    if (!activeContact || !identity || !token) {
       setMessages([]);
       return;
     }
 
-    let q;
-    if (activeContact.isGroup) {
-      q = query(
-        collection(db_fs, "messages"),
-        where("receiver_id", "==", activeContact.id),
-        orderBy("timestamp", "asc")
-      );
-    } else {
-      q = query(
-        collection(db_fs, "messages"),
-        or(
-          and(where("sender_id", "==", identity.id), where("receiver_id", "==", activeContact.id)),
-          and(where("sender_id", "==", activeContact.id), where("receiver_id", "==", identity.id))
-        ),
-        orderBy("timestamp", "asc")
-      );
-    }
-
-    const unsub = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
-      setMessages(prev => {
-        const newMsgs = [...prev];
-        msgs.forEach(m => {
-          if (!newMsgs.find(p => p.id === m.id)) {
-            newMsgs.push(m);
-          }
+    const fetchMessages = async () => {
+      try {
+        const res = await fetch(`/api/messages?userId1=${identity.id}&userId2=${activeContact.id}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
         });
-        return newMsgs.sort((a, b) => a.timestamp - b.timestamp);
-      });
-      
-      // Handle notifications
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === "added") {
-          const m = change.doc.data();
-          if (m.sender_id !== identity.id && m.timestamp > Date.now() - 5000) {
-            // Beep sound
-            try {
-               const audio = new Audio("data:audio/mp3;base64,//NExAAAAANIAAAAAExBTUUzLjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq");
-               audio.play().catch(()=>{});
-            } catch(e){}
-            
-            if (document.hidden && "Notification" in window && Notification.permission === "granted") {
-              new Notification(`New message from ${m.sender}`, { body: m.content });
-            }
-          }
+        if (res.ok) {
+          const { data } = await res.json();
+          setMessages(data.sort((a, b) => a.timestamp - b.timestamp));
+          setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
         }
-      });
-      
-      // Mark as read
-      msgs.filter(m => m.sender_id !== identity.id && !m.is_read).forEach(m => {
-        updateDoc(doc(db_fs, "messages", m.id), { is_read: true });
-        if (chatClientRef.current) {
-          chatClientRef.current.markRead(m.id, m.sender_id);
-        }
-      });
-      
-      setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, 100);
-    }, (error) => {
-      console.error("Messages listener error:", error);
-      toast.error(`Messages Error: ${error.message}`);
-    });
+      } catch (e) {
+        console.error("Fetch messages error:", e);
+      }
+    };
 
-    return () => unsub();
-  }, [activeContact, identity]);
+    fetchMessages();
+    
+    // Note: real-time updates are handled by ChatClient WebSocket in the first useEffect
+  }, [activeContact, identity, token]);
 
   const handleDelete = async (msgId) => {
     if (!confirm("Delete this message?")) return;
     try {
-        // Delete locally
-        if (chatClientRef.current) {
-            chatClientRef.current.deleteMessage(msgId, activeContact.id);
-        }
-        // Delete from UI
+        if (chatClientRef.current) chatClientRef.current.deleteMessage(msgId, activeContact.id);
         setMessages(prev => prev.filter(m => m.id !== msgId));
-        // Delete from Firestore (if exists there)
-        const q = query(collection(db_fs, "messages"), where("id", "==", msgId));
-        const snap = await getDocs(q);
-        snap.forEach(async (d) => {
-            await deleteDoc(doc(db_fs, "messages", d.id));
-        });
-    } catch (e) {
-        toast.error("Failed to delete message");
-    }
+        // Note: in a local-only setup, we might not have a global delete API if it's strictly P2P
+        // but since we have /api/messages, we should use it if we want server-side persistence
+    } catch (e) { toast.error("Failed to delete message"); }
   };
 
   const handleEdit = async (msgId, newContent) => {
     if (!newContent.trim()) return;
     try {
-        // Edit locally
-        if (chatClientRef.current) {
-            chatClientRef.current.editMessage(msgId, activeContact.id, newContent);
-        }
-        // Edit in UI
+        if (chatClientRef.current) chatClientRef.current.editMessage(msgId, activeContact.id, newContent);
         setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: newContent } : m));
-        // Edit in Firestore
-        const q = query(collection(db_fs, "messages"), where("id", "==", msgId));
-        const snap = await getDocs(q);
-        snap.forEach(async (d) => {
-            await updateDoc(doc(db_fs, "messages", d.id), { content: newContent });
-        });
         setEditingMsgId(null);
-    } catch (e) {
-        toast.error("Failed to edit message");
-    }
+    } catch (e) { toast.error("Failed to edit message"); }
   };
 
   const blockUser = async (user) => {
     if (!confirm(`Block ${user.username}?`)) return;
-    await addDoc(collection(db_fs, "blocks"), { blocker_id: identity.id, blocked_id: user.id });
-    setActiveContact(null);
-    toast.error(`Blocked ${user.username}`);
+    try {
+      await fetch('/api/connections', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ sender_id: identity.id, receiver_id: user.id, status: 'blocked' })
+      });
+      setActiveContact(null);
+      toast.error(`Blocked ${user.username}`);
+    } catch (e) { toast.error("Failed to block user"); }
   };
 
   const handleSend = async (e) => {
@@ -348,15 +259,21 @@ export default function ChatPage() {
     const isGroup = activeContact.isGroup;
     
     if (!isFriend && !isReq && !isGroup) {
-       await addDoc(collection(db_fs, "connections"), {
-         sender_id: identity.id,
-         receiver_id: activeContact.id,
-         status: 'pending',
-         created_at: Date.now()
+       await fetch('/api/connections', {
+         method: 'POST',
+         headers: { 
+           'Content-Type': 'application/json',
+           'Authorization': `Bearer ${token}`
+         },
+         body: JSON.stringify({
+           sender_id: identity.id,
+           receiver_id: activeContact.id,
+           status: 'pending'
+         })
        });
     }
 
-    const msgId = Date.now().toString();
+    const msgId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const messageData = {
       id: msgId,
       sender: identity.username,
@@ -368,14 +285,7 @@ export default function ChatPage() {
       is_read: false
     };
 
-    // Send via Local WebSocket
-    if (chatClientRef.current) {
-      chatClientRef.current.sendMessage(messageData);
-    }
-
-    // Send via Cloud Firestore
-    await addDoc(collection(db_fs, "messages"), messageData);
-
+    if (chatClientRef.current) chatClientRef.current.sendMessage(messageData);
     setInput(''); setShowEmoji(false);
   };
 
@@ -387,17 +297,16 @@ export default function ChatPage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
+      const res = await fetch('/api/upload', { 
+        method: 'POST', 
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData 
       });
-
       const data = await res.json();
       if (data.url) {
-        // Use the same origin for the upload URL to ensure it points to the correct server
         const baseUrl = window.location.origin;
-        await addDoc(collection(db_fs, "messages"), {
+        const msg = {
+          id: Date.now().toString(),
           sender: identity.username,
           sender_id: identity.id,
           receiver_id: activeContact.id,
@@ -405,13 +314,11 @@ export default function ChatPage() {
           content: `${baseUrl}${data.url}`,
           timestamp: Date.now(),
           is_read: false
-        });
+        };
+        if (chatClientRef.current) chatClientRef.current.sendMessage(msg);
+        setMessages(prev => [...prev, msg]);
       }
-    } catch (e) {
-      toast.error("Failed to upload image");
-    } finally {
-      setUploading(false);
-    }
+    } catch (e) { toast.error("Failed to upload image"); } finally { setUploading(false); }
   };
 
   const handleSearch = async (query) => {
@@ -419,31 +326,26 @@ export default function ChatPage() {
     if (query.length < 2) { setSearchResults([]); return; }
     setIsSearching(true);
     try {
-      const lowerQuery = query.toLowerCase();
-      // Native Firestore prefix search on lowercase field
-      const sq = query(
-        collection(db_fs, "users"),
-        where("search_name", ">=", lowerQuery),
-        where("search_name", "<=", lowerQuery + '\uf8ff')
-      );
-      const snapshot = await getDocs(sq);
-      const data = snapshot.docs.map(doc => doc.data()).filter(u => u.id !== identity.id);
-      setSearchResults(data);
-    } catch (e) {
-      setSearchResults([]);
-    }
+      const res = await fetch(`/api/profiles?query=${encodeURIComponent(query)}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const { data } = await res.json();
+        setSearchResults(data.filter(u => u.id !== identity.id));
+      }
+    } catch (e) { setSearchResults([]); }
     setIsSearching(false);
   };
 
   if (authLoading) return <div className="h-screen bg-gray-900 flex items-center justify-center text-gray-400 font-medium">Loading LocalChat...</div>;
-  if (!session) return <Auth onAuthComplete={() => window.location.reload()} />;
+  if (!session || !identity) return <Auth onAuthComplete={() => window.location.reload()} />;
 
   const filteredMessages = msgSearch ? messages.filter(m => m.content.toLowerCase().includes(msgSearch.toLowerCase())) : messages;
 
   return (
     <div className="flex h-screen bg-gray-900 text-gray-100 font-sans selection:bg-blue-500/30 overflow-hidden text-left">
       <Toaster />
-      <CreateGroupModal isOpen={showCreateGroup} onClose={() => setShowCreateGroup(false)} contacts={contacts} identity={identity} />
+      <CreateGroupModal isOpen={showCreateGroup} onClose={() => setShowCreateGroup(false)} contacts={contacts} identity={identity} token={token} />
       <aside className={`${showSidebar ? 'w-full sm:w-80' : 'w-0'} bg-gray-800/40 border-r border-gray-700/50 flex flex-col transition-all overflow-hidden z-30`}>
         <div className="p-5 border-b border-gray-700/50 flex items-center justify-between">
            <h2 className="font-bold flex items-center gap-2 text-lg text-blue-400"><MessageSquare size={20}/> Chats</h2>
@@ -572,9 +474,16 @@ export default function ChatPage() {
         {activeContact && messageRequests.find(r => r.id === activeContact.id) && (
           <div className="bg-amber-500/10 border-b border-amber-500/20 p-3 flex items-center justify-between px-6">
             <p className="text-xs text-amber-400 font-bold">New Message Request</p>
-            <button onClick={() => {
+            <button onClick={async () => {
               const req = messageRequests.find(r => r.id === activeContact.id);
-              updateDoc(doc(db_fs, "connections", req.request_id), { status: 'accepted' });
+              await fetch('/api/connections', {
+                method: 'PUT',
+                headers: { 
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ id: req.request_id, status: 'accepted' })
+              });
             }} className="bg-amber-500 text-gray-900 text-[10px] font-bold py-1 px-4 rounded-full uppercase tracking-tighter">Accept</button>
           </div>
         )}
@@ -628,36 +537,6 @@ export default function ChatPage() {
              <button type="button" onClick={() => setShowEmoji(!showEmoji)} className={`p-2.5 rounded-full transition-all ${showEmoji ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-blue-400'}`}><Smile size={20}/></button>
              <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder={activeContact ? `Message ${activeContact.username}...` : "Select chat"} className="flex-1 bg-transparent px-2 py-2 sm:py-3 outline-none text-gray-100 text-[16px] placeholder:text-gray-500" />
              <button type="submit" disabled={!input.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
-          </form>
-        </footer>
-      </main>
-    </div>
-  );
-}bled={!input.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
-          </form>
-        </footer>
-      </main>
-    </div>
-  );
-}dow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
-          </form>
-        </footer>
-      </main>
-    </div>
-  );
-}t-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
-          </form>
-        </footer>
-      </main>
-    </div>
-  );
-}bled={!input.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-all flex-shrink-0 active:scale-90 shadow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
-          </form>
-        </footer>
-      </main>
-    </div>
-  );
-}dow-lg shadow-blue-600/20"><Send size={18} className="translate-x-0.5"/></button>
           </form>
         </footer>
       </main>

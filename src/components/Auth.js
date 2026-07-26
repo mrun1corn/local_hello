@@ -2,13 +2,11 @@
 
 import { useState } from 'react';
 import { User, Loader2 } from 'lucide-react';
-import { auth, db_fs } from '@/lib/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { auth } from '@/lib/firebase';
 import toast, { Toaster } from 'react-hot-toast';
 import { 
   GoogleAuthProvider,
   signInWithPopup,
-  getAdditionalUserInfo,
   updateProfile,
   signOut
 } from 'firebase/auth';
@@ -16,41 +14,60 @@ import {
 export default function Auth({ onAuthComplete }) {
   const [loading, setLoading] = useState(false);
   const [username, setUsername] = useState('');
-  const [setupUser, setSetupUser] = useState(null); // Set when a new user needs to pick a username
+  const [setupUser, setSetupUser] = useState(null);
 
   const syncProfile = async (firebaseUser, displayName) => {
     const color = '#' + Math.floor(Math.random() * 16777215).toString(16);
     const finalName = displayName || firebaseUser.displayName || firebaseUser.email.split('@')[0];
-    await setDoc(doc(db_fs, "users", firebaseUser.uid), {
-      id: firebaseUser.uid,
-      email: firebaseUser.email,
-      username: finalName,
-      search_name: finalName.toLowerCase(),
-      color,
-      created_at: Date.now()
+    const token = await firebaseUser.getIdToken();
+    
+    await fetch('/api/profiles', {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        id: firebaseUser.uid,
+        email: firebaseUser.email,
+        username: finalName,
+        color
+      })
     });
   };
 
   const handleGoogleSignIn = async () => {
+    if (!auth) {
+      toast.error("Authentication not initialized. Check your Firebase config.");
+      return;
+    }
     setLoading(true);
     try {
       const provider = new GoogleAuthProvider();
       const userCredential = await signInWithPopup(auth, provider);
       const user = userCredential.user;
+      const token = await user.getIdToken();
 
-      // Check if they have a profile in Firestore
-      const docSnap = await getDoc(doc(db_fs, "users", user.uid));
-
-      // If they don't have a local profile, ask for a username
-      if (!docSnap.exists()) {
+      // Check if they have a profile locally
+      const res = await fetch(`/api/profiles?id=${user.uid}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (res.status === 404) {
+        // Set setup user so they can choose a username
         setSetupUser(user);
+        setUsername(user.displayName || user.email.split('@')[0]);
       } else {
         // Returning user
         onAuthComplete(user);
       }
     } catch (err) {
       console.warn('Google Auth failed:', err.message);
-      toast.error(err.message.replace('Firebase: ', '').split(' (auth/')[0].trim());
+      if (err.code === 'auth/popup-closed-by-user') {
+        toast.error("Sign-in cancelled");
+      } else {
+        toast.error(err.message.replace('Firebase: ', '').split(' (auth/')[0].trim());
+      }
     } finally {
       setLoading(false);
     }

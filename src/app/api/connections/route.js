@@ -1,10 +1,11 @@
-import db from '../../lib/db.js';
+import db from '@/lib/db';
+import { verifyIdToken } from '@/lib/firebase-admin';
 
 export async function GET(req) {
-  const { searchParams } = new URL(req.url);
-  const userId = searchParams.get('userId');
-
-  if (!userId) return Response.json({ error: 'Missing userId' }, { status: 400 });
+  const user = await verifyIdToken(req);
+  if (!user) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
   try {
     const connections = db.prepare(`
@@ -16,7 +17,7 @@ export async function GET(req) {
       LEFT JOIN profiles sp ON c.sender_id = sp.id
       LEFT JOIN profiles rp ON c.receiver_id = rp.id
       WHERE c.sender_id = ? OR c.receiver_id = ?
-    `).all(userId, userId);
+    `).all(user.uid, user.uid);
 
     // Map to the shape expected by frontend (senderProfile, receiverProfile)
     const mapped = connections.map(c => ({
@@ -32,11 +33,16 @@ export async function GET(req) {
 }
 
 export async function POST(req) {
+  const user = await verifyIdToken(req);
+  if (!user) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
-    const { sender_id, receiver_id, status } = await req.json();
+    const { receiver_id, status } = await req.json();
     const id = crypto.randomUUID();
-    const insert = db.prepare('INSERT INTO connections (id, sender_id, receiver_id, status, created_at) VALUES (?, ?, ?, ?, ?)');
-    insert.run(id, sender_id, receiver_id, status || 'pending', Date.now());
+    const insert = db.prepare('INSERT INTO connections (id, sender_id, receiver_id, status, timestamp) VALUES (?, ?, ?, ?, ?)');
+    insert.run(id, user.uid, receiver_id, status || 'pending', Date.now());
     return Response.json({ success: true });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
@@ -44,6 +50,11 @@ export async function POST(req) {
 }
 
 export async function PUT(req) {
+  const user = await verifyIdToken(req);
+  if (!user) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
     const { id, status } = await req.json();
     const update = db.prepare('UPDATE connections SET status = ? WHERE id = ?');

@@ -1,7 +1,6 @@
 import { initializeApp, getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore, enableMultiTabIndexedDbPersistence } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -21,18 +20,5 @@ if (firebaseConfig.apiKey && typeof window !== "undefined") {
 }
 
 const auth = app ? getAuth(app) : null;
-const db_fs = app ? getFirestore(app) : null;
-const storage = app ? getStorage(app) : null;
 
-// Enable offline caching and multi-tab sync
-if (app && db_fs && typeof window !== "undefined") {
-  enableMultiTabIndexedDbPersistence(db_fs).catch((err) => {
-    if (err.code === 'failed-precondition') {
-      console.warn('Multiple tabs open, persistence can only be enabled in one tab at a time.');
-    } else if (err.code === 'unimplemented') {
-      console.warn('The current browser does not support all of the features required to enable persistence.');
-    }
-  });
-}
-
-export { auth, db_fs, storage };
+export { auth };

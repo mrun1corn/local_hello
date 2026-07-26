@@ -1,10 +1,11 @@
-import db from '../../lib/db.js';
+import db from '@/lib/db';
+import { verifyIdToken } from '@/lib/firebase-admin';
 
 export async function GET(req) {
-  const { searchParams } = new URL(req.url);
-  const userId = searchParams.get('userId');
-
-  if (!userId) return Response.json({ error: 'Missing userId' }, { status: 400 });
+  const user = await verifyIdToken(req);
+  if (!user) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
   try {
     const blocks = db.prepare(`
@@ -12,7 +13,7 @@ export async function GET(req) {
       FROM blocks b
       JOIN profiles p ON b.blocked_id = p.id
       WHERE b.blocker_id = ?
-    `).all(userId);
+    `).all(user.uid);
 
     const mapped = blocks.map(b => ({
       blocked_id: b.blocked_id,

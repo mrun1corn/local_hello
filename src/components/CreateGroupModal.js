@@ -1,10 +1,8 @@
 import { useState } from 'react';
 import { X, Users, Check } from 'lucide-react';
-import { addDoc, collection } from 'firebase/firestore';
-import { db_fs } from '@/lib/firebase';
 import toast from 'react-hot-toast';
 
-export default function CreateGroupModal({ isOpen, onClose, contacts, identity }) {
+export default function CreateGroupModal({ isOpen, onClose, contacts, identity, token }) {
   const [groupName, setGroupName] = useState('');
   const [selectedContacts, setSelectedContacts] = useState([]);
 
@@ -24,18 +22,29 @@ export default function CreateGroupModal({ isOpen, onClose, contacts, identity }
 
     try {
       const color = '#' + Math.floor(Math.random() * 16777215).toString(16);
-      await addDoc(collection(db_fs, 'groups'), {
-        name: groupName.trim(),
-        username: groupName.trim(), // To be compatible with UI rendering
-        members: [identity.id, ...selectedContacts],
-        created_at: Date.now(),
-        color,
-        isGroup: true
+      const res = await fetch('/api/groups', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: groupName.trim(),
+          members: [identity.id, ...selectedContacts],
+          color
+        })
       });
-      toast.success('Group created!');
-      setGroupName('');
-      setSelectedContacts([]);
-      onClose();
+
+      if (res.ok) {
+        toast.success('Group created!');
+        setGroupName('');
+        setSelectedContacts([]);
+        onClose();
+        // Since we don't have real-time listeners for groups yet, we might need a refresh
+        window.location.reload(); 
+      } else {
+        throw new Error('Failed to create group');
+      }
     } catch (e) {
       console.error(e);
       toast.error('Failed to create group');
