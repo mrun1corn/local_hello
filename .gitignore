@@ -48,3 +48,12 @@ next-env.d.ts
 /public/uploads
 
 cred.txt
+
+data/
+server.log
+*.db
+*.sqlite
+*.sqlite3
+*.jks
+debug_ks.txt
+graphify-out/
